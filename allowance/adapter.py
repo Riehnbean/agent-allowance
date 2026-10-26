@@ -100,6 +100,12 @@ class Airwallex:
                     return self.get_transfer(tid)
             raise
 
+    def get_beneficiary(self, beneficiary_id):
+        return self._raw("GET", "/beneficiaries/" + beneficiary_id)
+
+    def update_beneficiary(self, beneficiary_id, payload):
+        return self._raw("POST", f"/beneficiaries/{beneficiary_id}/update", payload)
+
     def get_transfer(self, transfer_id):
         return self._raw("GET", "/transfers/" + transfer_id)
 
@@ -130,3 +136,23 @@ def minor_to_str(minor):
 def str_to_minor(v):
     from decimal import Decimal, ROUND_HALF_UP
     return int((Decimal(str(v)) * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def details_hash(beneficiary):
+    """Stable fingerprint of WHERE money goes. Any change to account, routing, name, country or
+    currency changes the hash - so a beneficiary edited after approval is detected before paying."""
+    import hashlib
+    b = beneficiary.get("beneficiary", beneficiary)
+    bd = b.get("bank_details", {})
+    parts = [bd.get(k, "") for k in ("account_number", "account_routing_type1", "account_routing_value1", "swift_code",
+                                    "iban", "bank_country_code", "account_currency", "account_name", "local_clearing_system")]
+    parts.append(b.get("company_name") or " ".join(filter(None, [b.get("first_name"), b.get("last_name")])))
+    norm = "|".join(str(x).strip().upper() for x in parts)
+    return hashlib.sha256(norm.encode()).hexdigest()
+
+
+def account_key(beneficiary):
+    """Account + routing only (no name) - used to spot one bank account reused under different names."""
+    b = beneficiary.get("beneficiary", beneficiary)
+    bd = b.get("bank_details", {})
+    return "|".join(str(bd.get(k, "")).strip().upper() for k in ("account_number", "account_routing_value1", "iban", "swift_code"))

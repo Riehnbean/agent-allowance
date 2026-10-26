@@ -11,14 +11,19 @@ CREATE TABLE IF NOT EXISTS policy(
   per_tx_cap INTEGER NOT NULL,
   daily_cap INTEGER NOT NULL,
   killed INTEGER NOT NULL DEFAULT 0,
-  killed_reason TEXT
+  killed_reason TEXT,
+  per_supplier_daily_cap INTEGER NOT NULL DEFAULT 150000,
+  max_payments_per_hour INTEGER NOT NULL DEFAULT 10,
+  max_fee INTEGER NOT NULL DEFAULT 2500
 );
 CREATE TABLE IF NOT EXISTS beneficiaries(
   id TEXT PRIMARY KEY,            -- Airwallex beneficiary id
   name TEXT NOT NULL,
   bank_fingerprint TEXT NOT NULL, -- last4 + routing, shown to the operator
   approved_by TEXT NOT NULL,
-  approved_at REAL NOT NULL
+  approved_at REAL NOT NULL,
+  details_hash TEXT,             -- sha256 of the full bank details at approval time (drift check)
+  account_key TEXT               -- account+routing only, to spot one account reused under different names
 );
 CREATE TABLE IF NOT EXISTS incidents(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,8 +34,11 @@ CREATE TABLE IF NOT EXISTS incidents(
   currency TEXT NOT NULL,
   supplier_deadline REAL,
   state TEXT NOT NULL DEFAULT 'OPEN',   -- OPEN, ESCALATED, RESOLVED
+  invoice_key TEXT,                     -- normalized supplier+invoice, for duplicate-invoice detection
+  alert TEXT,                           -- latest anomaly that forced escalation
   created_at REAL NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS one_incident_per_invoice ON incidents(invoice_key);
 CREATE TABLE IF NOT EXISTS approvals(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   incident_id INTEGER NOT NULL REFERENCES incidents(id),
@@ -56,6 +64,8 @@ CREATE TABLE IF NOT EXISTS payments(
   failure_type TEXT,
   failure_message TEXT,
   status_source TEXT,                   -- provider_get | provider_create | none
+  fee INTEGER NOT NULL DEFAULT 0,       -- provider fee in minor units, counted against budget
+  anomaly TEXT,                         -- e.g. PAID_THEN_RETURNED, PAID_AFTER_CANCELLED
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
@@ -103,11 +113,24 @@ class Store:
         )
 
     # policy ----------------------------------------------------------------
-    def init_policy(self, currency="USD", per_tx_cap=100000, daily_cap=200000):
+    def init_policy(self, currency="USD", per_tx_cap=100000, daily_cap=200000, **extra):
         self.db.execute(
             "INSERT OR IGNORE INTO policy(id,currency,per_tx_cap,daily_cap) VALUES(1,?,?,?)",
             (currency, per_tx_cap, daily_cap),
         )
+        for k, v in extra.items():
+            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee"):
+                self.db.execute(f"UPDATE policy SET {k}=? WHERE id=1", (v,))
+
+    def committed_today_for(self, beneficiary_id, now=None):
+        now = now or time.time()
+        day0 = now - (now % 86400)
+        r = self.one(
+            f"SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE beneficiary_id=? AND status IN ({','.join('?'*len(LIVE))})"
+            f" AND (created_at>=? OR status IN ({','.join('?'*len(IN_FLIGHT))}))",
+            beneficiary_id, *LIVE, day0, *IN_FLIGHT,
+        )
+        return r["s"]
 
     def policy(self):
         return self.one("SELECT * FROM policy WHERE id=1")
@@ -118,7 +141,7 @@ class Store:
         now = now or time.time()
         day0 = now - (now % 86400)
         r = self.one(
-            f"SELECT COALESCE(SUM(amount),0) s FROM payments WHERE status IN ({','.join('?'*len(LIVE))})"
+            f"SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE status IN ({','.join('?'*len(LIVE))})"
             f" AND (created_at>=? OR status IN ({','.join('?'*len(IN_FLIGHT))}))",
             *LIVE, day0, *IN_FLIGHT,
         )

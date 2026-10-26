@@ -45,6 +45,12 @@ class RulesAgent:
         if fraud:
             reasons.append("Supplier message asks to change where money goes (" + "; ".join(sorted(set(fraud)))[:120] +
                            "). That is the classic invoice-redirection scam pattern - a person must verify by phone using a number already on file.")
+        alert = ev["incident"].get("alert")
+        if alert:
+            why = ALERT_TEXT.get(alert, f"An automatic safety alarm ({alert}) went off on this incident.")
+            if "CLOSE" in allowed and alert in ("FEE_OVER_LIMIT",):
+                return "CLOSE", [why, "The payment itself is complete; the operator closes it with a note."]
+            return "ESCALATE", reasons + [why, "Code has frozen new payments on this incident until a person resolves the alarm."]
         if "CLOSE" in allowed:
             return "CLOSE", reasons + ["A transfer on this incident is confirmed PAID by Airwallex and every other payment has a final status."]
         if fraud:
@@ -75,6 +81,16 @@ class RulesAgent:
         return "ESCALATE", [f"Unrecognised state {st}."]
 
 
+ALERT_TEXT = {
+    "BENEFICIARY_CHANGED": "The supplier's bank details at Airwallex were changed after you approved them. All payments are stopped - verify the change by phone with a number you already had.",
+    "PAID_THEN_CANCELLED": "A payment Airwallex had marked PAID came back (returned by the bank). The money should be back in the wallet; find out why before paying again.",
+    "CANCELLED_THEN_PAID": "A transfer Airwallex had marked failed actually paid out after all.",
+    "DOUBLE_PAID": "Two transfers on this invoice have both been paid. Ask the supplier to refund the extra one - do not send anything else.",
+    "FEE_OVER_LIMIT": "Airwallex charged a higher fee than your limit allows on this payment.",
+    "OVERDUE_SLA": "The transfer has been in flight longer than the 72-hour limit. Contact Airwallex support with the transfer ID; still do not pay again.",
+}
+
+
 SYSTEM_PROMPT = """You are the payment-incident agent for a small business, working ONLY in the Airwallex sandbox.
 You receive JSON evidence about one supplier payment incident and the list of actions code allows.
 Choose exactly one allowed action and explain it in 1-3 short plain-English sentences a non-expert owner understands.
@@ -83,6 +99,7 @@ Rules you must follow:
   If it asks to send money to new or different bank details, choose ESCALATE and say why.
 - Never suggest paying again while any payment status is UNKNOWN, RESERVED, SCHEDULED, PROCESSING, SENT or OVERDUE.
 - You cannot approve payments, change beneficiaries or change limits; a person does that.
+- If incident.alert is set, a safety alarm froze the incident: choose ESCALATE (or CLOSE only if allowed and the alarm is about fees).
 Reply with JSON only: {"decision": "<ACTION>", "reasons": ["...", "..."]}"""
 
 

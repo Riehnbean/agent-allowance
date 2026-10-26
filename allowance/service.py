@@ -9,10 +9,11 @@ The agent may *propose*. Everything that can cost money is decided here, in code
     a failure type we consider safe to retry, and a separate operator approval.
 """
 import json
+import re
 import time
 import uuid
 
-from .adapter import Ambiguous, ProviderError
+from .adapter import Ambiguous, ProviderError, account_key, details_hash, str_to_minor
 from .store import IN_FLIGHT, LIVE
 
 # Failure types where paying the SAME beneficiary again is reasonable.
@@ -43,21 +44,43 @@ class Service:
         self._hint_at = {}
 
     # ---------------------------------------------------------------- setup
-    def allow_beneficiary(self, provider_id, name, fingerprint, operator):
+    def allow_beneficiary(self, provider_id, name, fingerprint, operator, details=None, override_reason=None):
+        """Put a payee on the allowlist. We read the bank details from Airwallex ourselves and remember a
+        hash of them, so a later edit to the payee (in the dashboard, by an insider, by a compromised key)
+        is caught before any money moves."""
+        if details is None:
+            details = self.p.get_beneficiary(provider_id)
+        h, ak = details_hash(details), account_key(details)
         with self.s.tx():
+            twin = self.s.one("SELECT id,name FROM beneficiaries WHERE account_key=? AND id<>?", ak, provider_id)
+            if twin and _norm_name(twin["name"]) != _norm_name(name) and not override_reason:
+                self.s.log("policy", "beneficiary_refused", "decided", None, id=provider_id, name=name, reason="same bank account as " + twin["name"])
+                raise Refused(f"this bank account is already on file under a different supplier name ({twin['name']}) - a common money-mule pattern; needs an override reason")
             self.s.db.execute(
-                "INSERT OR REPLACE INTO beneficiaries VALUES(?,?,?,?,?)",
-                (provider_id, name, fingerprint, operator, self.now()),
+                "INSERT OR REPLACE INTO beneficiaries(id,name,bank_fingerprint,approved_by,approved_at,details_hash,account_key) VALUES(?,?,?,?,?,?,?)",
+                (provider_id, name, fingerprint, operator, self.now(), h, ak),
             )
-            self.s.log("operator", "beneficiary_allowed", "operator", None, id=provider_id, name=name, fingerprint=fingerprint, by=operator)
+            self.s.log("operator", "beneficiary_allowed", "operator", None, id=provider_id, name=name, fingerprint=fingerprint,
+                       by=operator, details_hash=h[:12], override=override_reason)
 
     def open_incident(self, supplier, invoice, beneficiary_id, amount, currency, deadline=None):
+        invoice = clean_ref(invoice)
+        if not isinstance(amount, int) or amount <= 0:
+            raise Refused("amount must be a positive whole number of cents")
+        key = _norm_name(supplier) + "|" + _norm_name(invoice)
         with self.s.tx():
             if not self.s.one("SELECT 1 FROM beneficiaries WHERE id=?", beneficiary_id):
                 raise Refused("beneficiary is not on the operator's allowlist")
+            dup = self.s.one("SELECT id FROM incidents WHERE invoice_key=?", key)
+            if dup:
+                raise Refused(f"invoice {invoice} from {supplier} is already handled in incident #{dup['id']} - duplicate invoice")
+            twin = self.s.one("SELECT id,beneficiary_id FROM incidents WHERE amount=? AND invoice_key LIKE ? AND beneficiary_id<>?",
+                              amount, "%|" + _norm_name(invoice), beneficiary_id)
+            if twin:
+                raise Refused(f"the same invoice number and amount was already sent to a different payee (incident #{twin['id']}) - possible redirected duplicate")
             cur = self.s.db.execute(
-                "INSERT INTO incidents(supplier,invoice,beneficiary_id,amount,currency,supplier_deadline,created_at) VALUES(?,?,?,?,?,?,?)",
-                (supplier, invoice, beneficiary_id, amount, currency, deadline, self.now()),
+                "INSERT INTO incidents(supplier,invoice,beneficiary_id,amount,currency,supplier_deadline,invoice_key,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (supplier, invoice, beneficiary_id, amount, currency, deadline, key, self.now()),
             )
             iid = cur.lastrowid
             self.s.log("system", "incident_opened", "decided", iid, supplier=supplier, invoice=invoice, amount=amount, currency=currency)
@@ -66,6 +89,11 @@ class Service:
     def approve(self, incident_id, role, operator, ttl=3600, beneficiary_id=None, amount=None, currency=None):
         inc = self._incident(incident_id)
         b, a, c = beneficiary_id or inc["beneficiary_id"], amount or inc["amount"], currency or inc["currency"]
+        if (b, a, c) != (inc["beneficiary_id"], inc["amount"], inc["currency"]):
+            self.s.log("policy", "approval_refused", "decided", incident_id, reason="approval terms differ from the invoice")
+            raise Refused("an approval must match the invoice exactly (payee, amount, currency)")
+        if ttl > 24 * 3600:
+            raise Refused("approvals expire within 24 hours")
         with self.s.tx():
             cur = self.s.db.execute(
                 "INSERT INTO approvals(incident_id,role,beneficiary_id,amount,currency,expires_at,approved_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -124,6 +152,8 @@ class Service:
             self.s.log("policy", "payment_blocked_by_kill", "decided", pay["incident_id"], request_id=request_id)
             raise Refused("kill switch is on; reservation released without submitting")
         inc = self._incident(pay["incident_id"])
+        if pay["status"] == "RESERVED":
+            self._presubmit_checks(pay)
         try:
             t = self.p.create_transfer(request_id, pay["beneficiary_id"], pay["amount"], pay["currency"], f"{inc['invoice']} {pay['role']}")
         except Ambiguous as e:
@@ -137,6 +167,31 @@ class Service:
             return self.payment(request_id)
         self._apply_provider(request_id, t, "provider_create")
         return self.payment(request_id)
+
+    def _presubmit_checks(self, pay):
+        """Network checks done before the first submit (never before a same-request_id retry)."""
+        rid, iid = pay["request_id"], pay["incident_id"]
+        ben = self.s.one("SELECT * FROM beneficiaries WHERE id=?", pay["beneficiary_id"])
+
+        def stop(code, msg, alert=None):
+            self._set(rid, "CANCELLED", "none", failure_type=code, failure_message=msg)
+            self.s.log("policy", "presubmit_blocked", "decided", iid, request_id=rid, code=code, reason=msg)
+            if alert:
+                self._alert(iid, alert)
+            raise Refused(msg + " - nothing was sent")
+        try:
+            current = self.p.get_beneficiary(pay["beneficiary_id"])
+        except (Ambiguous, ProviderError) as e:
+            stop("DRIFT_CHECK_UNAVAILABLE", f"could not re-read the payee's bank details ({e})")
+        if ben["details_hash"] and details_hash(current) != ben["details_hash"]:
+            self.kill("system", "payee bank details changed after approval")
+            stop("BENEFICIARY_CHANGED", "the payee's bank details at Airwallex changed after they were approved", alert="BENEFICIARY_CHANGED")
+        try:
+            bal = self.p.usd_balance_minor()
+        except (Ambiguous, ProviderError):
+            bal = None
+        if bal is not None and bal < pay["amount"] + self.s.policy()["max_fee"]:
+            stop("INSUFFICIENT_BALANCE_PRECHECK", f"wallet balance {bal/100:.2f} would not cover this payment plus fees")
 
     def reconcile(self, request_id):
         """Ask Airwallex what really happened to this request_id. Safe to repeat."""
@@ -180,7 +235,7 @@ class Service:
         pays = [dict(p) for p in self.s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,amount,currency,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", incident_id)]
         pol = self.s.policy()
         return {
-            "incident": {k: inc[k] for k in ("id", "supplier", "invoice", "amount", "currency", "supplier_deadline", "state")},
+            "incident": {k: inc[k] for k in ("id", "supplier", "invoice", "amount", "currency", "supplier_deadline", "state", "alert")},
             "payments": pays,
             "kill_switch": bool(pol["killed"]),
             "budget_left_today": pol["daily_cap"] - self.s.committed_today(self.now()),
@@ -201,7 +256,7 @@ class Service:
             acts.add("CLOSE")
         last = pays[-1] if pays else None
         if (not live and not paid and last and last["status"] == "CANCELLED" and last["status_source"] == "provider_get"
-                and last["failure_type"] in RETRYABLE and not ev["kill_switch"]):
+                and last["failure_type"] in RETRYABLE and not ev["kill_switch"] and not ev["incident"]["alert"]):
             acts.add("REPLACE")
         return sorted(acts)
 
@@ -219,7 +274,10 @@ class Service:
                 self.s.db.execute("UPDATE incidents SET state='ESCALATED' WHERE id=?", (incident_id,))
         return decision
 
-    def close(self, incident_id, operator):
+    def close(self, incident_id, operator, note=None):
+        inc = self._incident(incident_id)
+        if inc["alert"] and not (note and len(note.strip()) >= 10):
+            raise Refused(f"open alert {inc['alert']}: write a short resolution note (what you checked, what happened) to close")
         pays = self.s.q("SELECT * FROM payments WHERE incident_id=?", incident_id)
         if not any(p["status"] == "PAID" for p in pays):
             raise Refused("nothing has been paid yet")
@@ -228,7 +286,7 @@ class Service:
             raise Refused("another payment on this incident has no final status yet: " + ", ".join(open_))
         with self.s.tx():
             self.s.db.execute("UPDATE incidents SET state='RESOLVED' WHERE id=?", (incident_id,))
-            self.s.log("operator", "incident_resolved", "operator", incident_id, by=operator,
+            self.s.log("operator", "incident_resolved", "operator", incident_id, by=operator, note=note,
                        outcome={p["request_id"]: [p["role"], p["status"], p["failure_type"]] for p in pays})
 
     def receipt(self, incident_id):
@@ -279,6 +337,13 @@ class Service:
             raise Refused("over the per-payment cap")
         if self.s.committed_today(self.now()) + amount > pol["daily_cap"]:
             raise Refused("would exceed today's cap (reserved and uncertain payments count)")
+        if self.s.committed_today_for(beneficiary_id, self.now()) + amount > pol["per_supplier_daily_cap"]:
+            raise Refused("would exceed today's cap for this one payee")
+        recent = self.s.one("SELECT COUNT(*) n FROM payments WHERE created_at>?", self.now() - 3600)["n"]
+        if recent >= pol["max_payments_per_hour"]:
+            raise Refused(f"rate limit: {recent} payments in the last hour (max {pol['max_payments_per_hour']})")
+        if inc["alert"]:
+            raise Refused(f"incident has an open alert ({inc['alert']}); a person must resolve it first")
         pays = self.s.q("SELECT * FROM payments WHERE incident_id=?", inc["id"])
         if any(p["status"] in IN_FLIGHT for p in pays):
             raise Refused("duplicate lock: another payment on this incident may still go through")
@@ -303,24 +368,70 @@ class Service:
         # Map the provider's failure *reason* to our retry classes via the message when needed.
         ftype = _classify_failure(fail.get("message"), ftype) if status == "CANCELLED" else None
         prev = self.payment(request_id)
-        self._set(request_id, status, source, provider_id=t.get("id"), failure_type=ftype, failure_message=fail.get("message"))
+        fee = None
+        if t.get("fee_amount") is not None and t.get("fee_paid_by", "PAYER") == "PAYER":
+            fee = str_to_minor(t["fee_amount"])
+        payer_pays = str_to_minor(t["amount_payer_pays"]) if t.get("amount_payer_pays") is not None else None
+        self._set(request_id, status, source, provider_id=t.get("id"), failure_type=ftype, failure_message=fail.get("message"), fee=fee)
+        if (fee or 0) > self.s.policy()["max_fee"] or (payer_pays and payer_pays > prev["amount"] + self.s.policy()["max_fee"]):
+            self._anomaly(request_id, "FEE_OVER_LIMIT", f"Airwallex charges {((payer_pays or prev['amount'] + (fee or 0)))/100:.2f} for a {prev['amount']/100:.2f} payment")
         if prev["status"] != status:
             self.s.log("provider", "status_observed", "observed", prev["incident_id"], request_id=request_id,
                        provider_id=t.get("id"), status=status, previous=prev["status"], failure_type=ftype,
                        failure_message=fail.get("message"), via=source)
 
-    def _set(self, request_id, status, source, provider_id=None, failure_type=None, failure_message=None):
+    def _set(self, request_id, status, source, provider_id=None, failure_type=None, failure_message=None, fee=None):
+        flip = None
         with self.s.tx():
-            cur = self.s.one("SELECT status FROM payments WHERE request_id=?", request_id)["status"]
+            row = self.s.one("SELECT status, incident_id FROM payments WHERE request_id=?", request_id)
+            cur = row["status"]
             if cur in FINAL and status != cur:
-                # Final states never move (late or reordered updates are ignored but logged).
-                self.s.log("provider", "late_update_ignored", "observed", None, request_id=request_id, had=cur, got=status)
-                return
+                if source == "provider_get" and status in FINAL:
+                    # A FINAL status changed at the provider itself (e.g. PAID then returned, or a
+                    # "cancelled" transfer that paid after all). Record the truth and stop everything
+                    # on this incident until a person looks.
+                    flip = f"{cur}_THEN_{status}"
+                else:
+                    # Stale / reordered information never reopens a final payment.
+                    self.s.log("provider", "late_update_ignored", "observed", row["incident_id"], request_id=request_id, had=cur, got=status)
+                    return
             self.s.db.execute(
                 "UPDATE payments SET status=?, status_source=?, provider_id=COALESCE(?,provider_id), failure_type=COALESCE(?,failure_type),"
-                " failure_message=COALESCE(?,failure_message), updated_at=? WHERE request_id=?",
-                (status, source, provider_id, failure_type, failure_message, self.now(), request_id),
+                " failure_message=COALESCE(?,failure_message), fee=COALESCE(?,fee), updated_at=? WHERE request_id=?",
+                (status, source, provider_id, failure_type, failure_message, fee, self.now(), request_id),
             )
+        if flip:
+            self._anomaly(request_id, flip, f"Airwallex changed a final status: {cur} -> {status}")
+            if status == "PAID":
+                paid = self.s.q("SELECT request_id FROM payments WHERE incident_id=? AND status='PAID'", row["incident_id"])
+                if len(paid) > 1:
+                    self._anomaly(request_id, "DOUBLE_PAID", "two transfers on this incident are PAID - ask the supplier to refund one")
+
+    def _anomaly(self, request_id, code, detail):
+        row = self.s.one("SELECT incident_id FROM payments WHERE request_id=?", request_id)
+        with self.s.tx():
+            self.s.db.execute("UPDATE payments SET anomaly=? WHERE request_id=?", (code, request_id))
+        self.s.log("provider", "anomaly", "observed", row["incident_id"], request_id=request_id, code=code, detail=detail)
+        self._alert(row["incident_id"], code)
+
+    def _alert(self, incident_id, code):
+        with self.s.tx():
+            self.s.db.execute("UPDATE incidents SET alert=?, state=CASE WHEN state='RESOLVED' THEN 'RESOLVED' ELSE 'ESCALATED' END WHERE id=?", (code, incident_id))
+        self.s.log("policy", "incident_alert", "decided", incident_id, code=code)
+
+    def sweep(self, stale_after=600, sla=72 * 3600):
+        """Background safety net: re-read anything uncertain or in flight that hasn't been checked
+        lately, and raise an alert when a transfer sits in flight past the SLA."""
+        out = []
+        for p in self.s.q(f"SELECT * FROM payments WHERE status IN ({','.join('?'*len(IN_FLIGHT))})", *IN_FLIGHT):
+            if self.now() - p["updated_at"] >= stale_after:
+                out.append(self.reconcile(p["request_id"]))
+            if self.now() - p["created_at"] > sla and p["status"] in IN_FLIGHT:
+                inc = self._incident(p["incident_id"])
+                if inc["alert"] != "OVERDUE_SLA":
+                    self.s.log("policy", "sla_breached", "decided", p["incident_id"], request_id=p["request_id"], hours=int((self.now() - p["created_at"]) / 3600))
+                    self._alert(p["incident_id"], "OVERDUE_SLA")
+        return out
 
 
 ALL_FAILURE_TYPES = [
@@ -347,3 +458,18 @@ def _classify_failure(message, detail_type):
     In the sandbox failure.details.type is always INCORRECT_ROUTING, so we do not trust it.
     Anything we cannot classify is UNCLASSIFIED, which is never auto-retried."""
     return _BY_MESSAGE.get(_norm(message), "UNCLASSIFIED")
+
+
+def _norm_name(x):
+    return re.sub(r"[^A-Z0-9]", "", str(x or "").upper().replace("LLC", "").replace("INC", "").replace("LTD", ""))
+
+
+_REF_OK = re.compile(r"[^A-Za-z0-9 #./_-]")
+
+
+def clean_ref(x):
+    """Invoice/reference text ends up in bank references and in the agent's context: keep it boring."""
+    x = _REF_OK.sub("", str(x or "")).strip()[:40]
+    if not x:
+        raise Refused("invoice number is required (letters, digits, # . / _ -)")
+    return x
