@@ -174,6 +174,14 @@ class H(BaseHTTPRequestHandler):
             f = {"/": "index.html", "/index.html": "index.html"}.get(path, path[1:])
             ctype = {"js": "application/javascript", "css": "text/css"}.get(f.rsplit(".", 1)[-1], "text/html; charset=utf-8")
             return self._send(200, open(os.path.join(HERE, "web", f), "rb").read(), ctype)
+        if method == "POST" and path == "/webhook/airwallex":
+            # Unauthenticated by design: a webhook only makes us re-read Airwallex; it never sets a status.
+            n = min(int(self.headers.get("Content-Length") or 0), 65536)
+            try:
+                SVC.on_webhook(json.loads(self.rfile.read(n) or b"{}"))
+            except Exception:
+                pass
+            return self._send(200, {"ok": True})
         if not path.startswith("/api/"):
             return self._send(404, {"error": "not found"})
         if not TOKEN or not hmac.compare_digest(self.headers.get("X-Operator-Token", ""), TOKEN):

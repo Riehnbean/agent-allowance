@@ -292,6 +292,30 @@ class Replacement(Base):
         with self.assertRaisesRegex(Refused, "nothing has been paid"):
             self.svc.close(iid, "zach")
 
+    def test_forged_webhook_cannot_mark_paid(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        r = self.svc.on_webhook({"name": "payout.transfer.paid", "data": {"object": {"id": p["provider_id"], "status": "PAID"}}})
+        self.assertEqual(r["status"], "SCHEDULED")  # re-read from Airwallex, claim ignored
+        self.assertNotIn("CLOSE", self.svc.allowed_actions(iid))
+
+    def test_duplicate_webhooks_are_harmless(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fake.simulate(p["provider_id"], "SENT")
+        self.fake.simulate(p["provider_id"], "PAID")
+        for _ in range(3):
+            self.svc.on_webhook({"name": "payout.transfer.paid", "data": {"object": {"id": p["provider_id"]}}})
+        self.assertEqual(self.svc.payment(p["request_id"])["status"], "PAID")
+        self.assertEqual(self.fake.calls, 1)
+
+    def test_close_not_offered_while_other_payment_live(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fail(p["request_id"], "CHANNEL_TIMEOUT")
+        r = self.svc.pay(self.svc.approve(iid, "replacement", "zach"), "replacement", BEN, 25_000, "USD")
+        self.assertNotIn("CLOSE", self.svc.allowed_actions(iid))
+
     def test_events_are_append_only(self):
         import sqlite3
         with self.assertRaises(sqlite3.DatabaseError):

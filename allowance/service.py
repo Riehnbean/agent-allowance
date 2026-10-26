@@ -40,6 +40,7 @@ class Refused(Exception):
 class Service:
     def __init__(self, store, provider, clock=time.time):
         self.s, self.p, self.now = store, provider, clock
+        self._hint_at = {}
 
     # ---------------------------------------------------------------- setup
     def allow_beneficiary(self, provider_id, name, fingerprint, operator):
@@ -154,6 +155,24 @@ class Service:
         self._apply_provider(request_id, t, "provider_get")
         return self.payment(request_id)
 
+    def on_webhook(self, payload):
+        """Webhooks are treated as a hint to look, never as the truth: we log the claim, then
+        re-read the transfer from Airwallex. A forged, duplicated or out-of-order webhook therefore
+        cannot change a payment's status by itself."""
+        obj = (payload.get("data") or {}).get("object") or payload.get("data") or {}
+        tid, rid = obj.get("id"), obj.get("request_id")
+        row = self.s.one("SELECT request_id, incident_id FROM payments WHERE provider_id=? OR request_id=?", tid or "-", rid or "-")
+        self.s.log("provider", "webhook_hint", "untrusted", row["incident_id"] if row else None,
+                   name=payload.get("name"), claimed_status=obj.get("status"), transfer_id=tid, request_id=rid)
+        if not row:
+            return None
+        # Throttle: anyone can POST a webhook, so at most one Airwallex re-read per payment every 5s.
+        last = self._hint_at.get(row["request_id"], 0)
+        if self.now() - last < 5:
+            return self.payment(row["request_id"])
+        self._hint_at[row["request_id"]] = self.now()
+        return self.reconcile(row["request_id"])
+
     # ------------------------------------------------------------ incident
     def evidence(self, incident_id):
         """Everything the agent is allowed to see. No credentials, no raw provider payloads."""
@@ -178,7 +197,7 @@ class Service:
         acts = {"ESCALATE"}
         if live:
             acts.add("WAIT")
-        if paid:
+        if paid and not live:
             acts.add("CLOSE")
         last = pays[-1] if pays else None
         if (not live and not paid and last and last["status"] == "CANCELLED" and last["status_source"] == "provider_get"
