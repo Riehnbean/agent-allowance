@@ -102,6 +102,19 @@ class Service:
             self.s.log("operator", "approved", "operator", incident_id, approval_id=cur.lastrowid, role=role, beneficiary_id=b, amount=a, currency=c, ttl=ttl, by=operator)
         return cur.lastrowid
 
+    def cosign(self, approval_id, operator):
+        """Second pair of eyes for large payments: a DIFFERENT operator must co-sign."""
+        with self.s.tx():
+            ap = self.s.one("SELECT * FROM approvals WHERE id=?", approval_id)
+            if not ap:
+                raise Refused("no such approval")
+            if ap["approved_by"] == operator:
+                raise Refused("the co-signer must be a different person than the first approver")
+            if ap["used_by_request"]:
+                raise Refused("approval already used")
+            self.s.db.execute("UPDATE approvals SET cosigned_by=? WHERE id=?", (operator, approval_id))
+            self.s.log("operator", "cosigned", "operator", ap["incident_id"], approval_id=approval_id, by=operator)
+
     def kill(self, operator, reason="operator stop"):
         with self.s.tx():
             self.s.db.execute("UPDATE policy SET killed=1, killed_reason=? WHERE id=1", (reason,))
@@ -183,6 +196,9 @@ class Service:
             current = self.p.get_beneficiary(pay["beneficiary_id"])
         except (Ambiguous, ProviderError) as e:
             stop("DRIFT_CHECK_UNAVAILABLE", f"could not re-read the payee's bank details ({e})")
+        cur_ccy = ((current.get("beneficiary") or current).get("bank_details") or {}).get("account_currency")
+        if cur_ccy and cur_ccy != pay["currency"]:
+            stop("ACCOUNT_CURRENCY_MISMATCH_PRECHECK", f"the payee's account is in {cur_ccy}, not {pay['currency']}")
         if ben["details_hash"] and details_hash(current) != ben["details_hash"]:
             self.kill("system", "payee bank details changed after approval")
             stop("BENEFICIARY_CHANGED", "the payee's bank details at Airwallex changed after they were approved", alert="BENEFICIARY_CHANGED")
@@ -335,6 +351,8 @@ class Service:
             raise Refused("currency not allowed")
         if amount > pol["per_tx_cap"]:
             raise Refused("over the per-payment cap")
+        if amount > pol["dual_approval_over"] and not (ap["cosigned_by"] and ap["cosigned_by"] != ap["approved_by"]):
+            raise Refused(f"payments over {pol['dual_approval_over']/100:.2f} need a second person to co-sign the approval")
         if self.s.committed_today(self.now()) + amount > pol["daily_cap"]:
             raise Refused("would exceed today's cap (reserved and uncertain payments count)")
         if self.s.committed_today_for(beneficiary_id, self.now()) + amount > pol["per_supplier_daily_cap"]:

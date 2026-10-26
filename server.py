@@ -24,6 +24,17 @@ from allowance.store import Store  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKEN = os.environ.get("OPERATOR_TOKEN", "")
+# Named operators for four-eyes approval: OPERATOR_TOKENS="zach:secret1,jordan:secret2"
+OPERATORS = {t: n for n, t in (x.split(":", 1) for x in os.environ.get("OPERATOR_TOKENS", "").split(",") if ":" in x)}
+if TOKEN:
+    OPERATORS.setdefault(TOKEN, "operator")
+
+
+def who(token):
+    for t, n in OPERATORS.items():
+        if t and hmac.compare_digest(token or "", t):
+            return n
+    return None
 DB = os.environ.get("ALLOWANCE_DB", os.path.join(HERE, "allowance.db"))
 
 
@@ -62,14 +73,14 @@ def state():
     incs = []
     for i in s.q("SELECT * FROM incidents ORDER BY id DESC LIMIT 20"):
         pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,fee,anomaly,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
-        aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
+        aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
         last = s.one("SELECT body,at,provenance FROM events WHERE incident_id=? AND kind='decision' ORDER BY id DESC LIMIT 1", i["id"])
         ev = [dict(e, body=json.loads(e["body"])) for e in s.q("SELECT at,actor,kind,provenance,body FROM events WHERE incident_id=? ORDER BY id DESC LIMIT 30", i["id"])]
         incs.append({**dict(i), "payments": pays, "approvals": aps, "allowed": SVC.allowed_actions(i["id"]),
                      "decision": json.loads(last["body"]) | {"at": last["at"], "provenance": last["provenance"]} if last else None, "events": ev})
     pol = dict(s.policy())
     pol["committed_today"] = s.committed_today()
-    return {"policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
+    return {"me": None, "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": "claude" if AGENT.key else "rules (no LLM key set)", "drop_armed": PROV.armed,
             "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only"}
 
@@ -96,7 +107,7 @@ def unused_approval(iid, role):
     return a["id"]
 
 
-def handle(method, path, body):
+def handle(method, path, body, op="operator"):
     p = path.strip("/").split("/")
     if method == "GET" and path == "/api/state":
         return state()
@@ -107,10 +118,10 @@ def handle(method, path, body):
     if path == "/api/setup":
         return {"beneficiary": ensure_beneficiary()}
     if path == "/api/kill":
-        SVC.kill("operator", body.get("reason") or "operator pressed STOP")
+        SVC.kill(op, body.get("reason") or f"{op} pressed STOP")
         return {}
     if path == "/api/unkill":
-        SVC.unkill("operator")
+        SVC.unkill(op)
         return {}
     if path == "/api/demo/edit-payee":
         # Demo of an attacker / insider editing the payee inside Airwallex after it was approved.
@@ -142,7 +153,13 @@ def handle(method, path, body):
         iid, act = int(p[2]), p[3]
         inc = SVC.s.one("SELECT * FROM incidents WHERE id=?", iid)
         if act == "approve":
-            return {"approval": SVC.approve(iid, body["role"], "operator", ttl=int(body.get("ttl", 900)))}
+            return {"approval": SVC.approve(iid, body["role"], op, ttl=int(body.get("ttl", 900)))}
+        if act == "cosign":
+            co = who(body.get("cosigner_token", ""))
+            if not co:
+                raise Refused("co-signer token not recognised")
+            SVC.cosign(unused_approval(iid, body["role"]), co)
+            return {"cosigned_by": co}
         if act == "pay":
             role = body["role"]
             amt = cents(body["amount"]) if body.get("amount") else inc["amount"]
@@ -154,7 +171,7 @@ def handle(method, path, body):
             SVC.supplier_message(iid, body.get("text", ""))
             return {}
         if act == "close":
-            SVC.close(iid, "operator", note=body.get("note"))
+            SVC.close(iid, op, note=body.get("note"))
             return {}
     if len(p) >= 4 and p[1] == "payments":
         rid, act = p[2], p[3]
@@ -202,12 +219,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
         if not path.startswith("/api/"):
             return self._send(404, {"error": "not found"})
-        if not TOKEN or not hmac.compare_digest(self.headers.get("X-Operator-Token", ""), TOKEN):
+        op = who(self.headers.get("X-Operator-Token", ""))
+        if not op:
             return self._send(401, {"error": "operator token required"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}") if n else {}
-            self._send(200, handle(method, path, body))
+            self._send(200, handle(method, path, body, op))
         except Refused as e:
             self._send(409, {"refused": str(e)})
         except ProviderError as e:
@@ -239,8 +257,8 @@ def sweeper():
 
 if __name__ == "__main__":
     sweeper()
-    if not TOKEN:
-        sys.exit("Set OPERATOR_TOKEN to a secret of your choice first.")
+    if not OPERATORS:
+        sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
     print(f"Operator desk on http://{host}:{port}  (Airwallex SANDBOX, agent={'claude' if AGENT.key else 'rules'})")
     ThreadingHTTPServer((host, port), H).serve_forever()

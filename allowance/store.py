@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS policy(
   killed_reason TEXT,
   per_supplier_daily_cap INTEGER NOT NULL DEFAULT 150000,
   max_payments_per_hour INTEGER NOT NULL DEFAULT 10,
-  max_fee INTEGER NOT NULL DEFAULT 2500
+  max_fee INTEGER NOT NULL DEFAULT 2500,
+  dual_approval_over INTEGER NOT NULL DEFAULT 50000
 );
 CREATE TABLE IF NOT EXISTS beneficiaries(
   id TEXT PRIMARY KEY,            -- Airwallex beneficiary id
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS approvals(
   expires_at REAL NOT NULL,
   approved_by TEXT NOT NULL,
   used_by_request TEXT,
+  cosigned_by TEXT,
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS payments(
@@ -119,7 +121,7 @@ class Store:
             (currency, per_tx_cap, daily_cap),
         )
         for k, v in extra.items():
-            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee"):
+            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over"):
                 self.db.execute(f"UPDATE policy SET {k}=? WHERE id=1", (v,))
 
     def committed_today_for(self, beneficiary_id, now=None):

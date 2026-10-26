@@ -134,6 +134,7 @@ class Ambiguity(Base):
         self.assertEqual(len(self.fake.by_req), 1)
 
     def test_unknown_survives_restart_and_counts_against_cap(self):
+        self.svc.s.db.execute("UPDATE policy SET dual_approval_over=10000000, per_supplier_daily_cap=10000000")
         iid = self.incident(amount=100_000)
         self.fake.lose_response_next = True
         self.pay_original(iid, amount=100_000)
@@ -214,7 +215,7 @@ class Approvals(Base):
 
 class Caps(Base):
     def test_concurrent_reservations_respect_daily_cap(self):
-        self.svc.s.db.execute("UPDATE policy SET per_supplier_daily_cap=10000000")
+        self.svc.s.db.execute("UPDATE policy SET per_supplier_daily_cap=10000000, dual_approval_over=10000000")
         ids = [self.incident(amount=90_000) for _ in range(6)]
         aps = [self.svc.approve(i, "original", "zach") for i in ids]
         ok, bad = [], []
@@ -338,9 +339,6 @@ class Replacement(Base):
         r = self.svc.pay(self.svc.approve(iid, "replacement", "zach"), "replacement", BEN, 25_000, "USD")
         self.assertNotIn("CLOSE", self.svc.allowed_actions(iid))
 
-    def test_events_are_append_only_marker(self):
-        pass
-
     def test_events_are_append_only(self):
         import sqlite3
         with self.assertRaises(sqlite3.DatabaseError):
@@ -399,6 +397,27 @@ class PayeeIntegrity(Base):
         self.fake.balance = 10_000
         ap = self.svc.approve(iid, "original", "zach")
         with self.assertRaisesRegex(Refused, "would not cover"):
+            self.svc.pay(ap, "original", BEN, 25_000, "USD")
+        self.assertEqual(self.fake.calls, 0)
+
+
+class FourEyes(Base):
+    def test_large_payment_needs_second_person(self):
+        iid = self.incident(amount=80_000)
+        ap = self.svc.approve(iid, "original", "zach")
+        with self.assertRaisesRegex(Refused, "co-sign"):
+            self.svc.pay(ap, "original", BEN, 80_000, "USD")
+        with self.assertRaisesRegex(Refused, "different person"):
+            self.svc.cosign(ap, "zach")
+        ap2 = self.svc.approve(iid, "original", "zach")
+        self.svc.cosign(ap2, "jordan")
+        self.assertEqual(self.svc.pay(ap2, "original", BEN, 80_000, "USD")["status"], "SCHEDULED")
+
+    def test_currency_mismatch_blocked_before_send(self):
+        iid = self.incident()
+        self.fake.bens[BEN]["beneficiary"]["bank_details"]["account_currency"] = "EUR"
+        ap = self.svc.approve(iid, "original", "zach")
+        with self.assertRaisesRegex(Refused, "account is in EUR"):
             self.svc.pay(ap, "original", BEN, 25_000, "USD")
         self.assertEqual(self.fake.calls, 0)
 

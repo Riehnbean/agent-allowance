@@ -101,7 +101,13 @@ function render() {
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
   const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); const r = await api(`/api/incidents/${i.id}/receipt`); const a = el("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: "application/json" })); a.download = `receipt-${i.invoice}.json`; a.click(); };
   ops.append(ap, pay, note, close, rc); op.append(ops);
-  op.append(el("p", "hint", unused ? `Approval #${unused.id} ready - binds this supplier, ${usd(unused.amount)}, USD, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
+  if (unused && i.amount > S.policy.dual_approval_over && !unused.cosigned_by) {
+    const cs = el("form", "row"); const ct = el("input"); ct.type = "password"; ct.placeholder = "Second person's operator token";
+    const cb = el("button", null, "Co-sign (second person)"); cs.append(ct, cb);
+    cs.onsubmit = e => { e.preventDefault(); act(`/api/incidents/${i.id}/cosign`, { role, cosigner_token: ct.value }, r => "Co-signed by " + r.cosigned_by); };
+    op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)}: a second, different person must co-sign before it can be sent.`), cs);
+  }
+  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${usd(unused.amount)}, USD, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
   d.append(op);
 
   // Try to break it
