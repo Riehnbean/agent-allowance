@@ -90,7 +90,7 @@ class Base(unittest.TestCase):
 
     def incident(self, amount=25_000, invoice=None):
         Base.n += 1
-        return self.svc.open_incident("Maple Lumber", invoice or f"INV-{1000 + Base.n}", BEN, amount, "USD", deadline=self.t + 3600)
+        return self.svc.open_incident("Maple Lumber", invoice or f"INV-{1000 + Base.n}", BEN, amount, "USD", deadline=self.t + 3600, allow_similar=True)
 
     def pay_original(self, iid, amount=25_000):
         ap = self.svc.approve(iid, "original", "zach")
@@ -565,6 +565,85 @@ class TopFifteen(Base):
         self.assertEqual(bad, 2)
 
 
+class CatalogueGaps(Base):
+    def test_reminder_or_corrected_copy_needs_confirmation(self):  # INT-03/04
+        self.svc.open_incident("Maple Lumber", "INV-500", BEN, 25_000, "USD")
+        with self.assertRaisesRegex(Refused, "reminder"):
+            self.svc.open_incident("Maple Lumber", "INV-500-R", BEN, 25_000, "USD")
+        self.svc.open_incident("Maple Lumber", "INV-501", BEN, 25_000, "USD", allow_similar=True)
+
+    def test_splitting_under_cosign_limit_caught(self):  # APR-03
+        self.pay_original(self.incident(amount=30_000), amount=30_000)
+        iid = self.incident(amount=30_000)
+        ap = self.svc.approve(iid, "original", "zach")
+        with self.assertRaisesRegex(Refused, "splitting"):
+            self.svc.pay(ap, "original", BEN, 30_000, "USD")
+
+    def test_replace_loop_capped(self):  # TRM-06
+        iid = self.incident()
+        p = self.pay_original(iid)
+        for _ in range(2):
+            self.fail_with(p["request_id"], "CHANNEL_TIMEOUT")
+            p = self.svc.pay(self.svc.approve(iid, "replacement", "zach"), "replacement", BEN, 25_000, "USD")
+        self.fail_with(p["request_id"], "CHANNEL_TIMEOUT")
+        with self.assertRaisesRegex(Refused, "attempts"):
+            self.svc.pay(self.svc.approve(iid, "replacement", "zach"), "replacement", BEN, 25_000, "USD")
+
+    def test_payee_country_outside_allowlist(self):  # BEN-12
+        self.fake.bens[BEN]["beneficiary"]["bank_details"]["bank_country_code"] = "KP"
+        iid = self.incident()
+        ap = self.svc.approve(iid, "original", "zach")
+        with self.assertRaisesRegex(Refused, "outside the allowed countries"):
+            self.svc.pay(ap, "original", BEN, 25_000, "USD")
+
+    def test_supplier_says_not_received_while_paid(self):  # FLT-10
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fake.simulate(p["provider_id"], "SENT")
+        self.fake.simulate(p["provider_id"], "PAID")
+        self.svc.supplier_message(iid, "We still haven't received the payment for INV, please pay again")
+        d = run(self.svc, iid, RulesAgent())
+        self.assertEqual(d["decision"], "ESCALATE")
+        self.assertIn("Do NOT pay again", " ".join(d["reasons"]))
+        self.assertTrue(self.svc.receipt(iid)["proof_of_payment"])
+
+    def test_agent_refreshes_state_before_deciding(self):  # TRM-11
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fake.simulate(p["provider_id"], "SENT")
+        self.fake.simulate(p["provider_id"], "FAILED", "CHANNEL_TIMEOUT")  # we haven't reconciled yet
+        self.assertEqual(run(self.svc, iid, RulesAgent())["decision"], "REPLACE")
+
+    def test_agent_loop_throttled(self):  # FLT-13
+        iid = self.incident()
+        self.pay_original(iid)
+        run(self.svc, iid, RulesAgent())
+        with self.assertRaisesRegex(Refused, "seconds ago"):
+            run(self.svc, iid, RulesAgent())
+
+    def test_intake_flood_paused(self):  # MON-14
+        self.svc.s.db.execute("UPDATE policy SET max_incidents_per_hour=3")
+        for _ in range(3):
+            self.incident()
+        with self.assertRaisesRegex(Refused, "intake paused"):
+            self.incident()
+
+    def test_unsafe_policy_rejected(self):  # MON-10
+        self.svc.s.db.execute("UPDATE policy SET per_tx_cap=999999999")
+        with self.assertRaisesRegex(ValueError, "unsafe policy"):
+            self.svc.s.validate_policy()
+
+    def test_decision_log_keeps_evidence(self):  # REC-07
+        iid = self.incident()
+        self.pay_original(iid)
+        run(self.svc, iid, RulesAgent())
+        e = self.svc.s.one("SELECT body FROM events WHERE kind='decision' ORDER BY id DESC")
+        import json as _j
+        b = _j.loads(e["body"])
+        self.assertTrue(b["evidence_hash"])
+        self.assertEqual(b["evidence"]["incident"]["id"], iid)
+
+
 class Limits(Base):
     def test_per_supplier_cap(self):
         self.svc.s.db.execute("UPDATE policy SET per_supplier_daily_cap=40000")
@@ -575,7 +654,7 @@ class Limits(Base):
             self.svc.pay(ap, "original", BEN, 25_000, "USD")
 
     def test_rate_limit(self):
-        self.svc.s.db.execute("UPDATE policy SET max_payments_per_hour=2, daily_cap=10000000, per_supplier_daily_cap=10000000")
+        self.svc.s.db.execute("UPDATE policy SET max_payments_per_hour=2, daily_cap=10000000, per_supplier_daily_cap=10000000, dual_approval_over=10000000")
         self.pay_original(self.incident())
         self.pay_original(self.incident())
         iid = self.incident()

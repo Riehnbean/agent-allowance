@@ -25,6 +25,14 @@ REDIRECT_PATTERNS = re.compile(
 )
 
 
+NOT_RECEIVED = re.compile(r"(not|never|haven'?t|didn'?t|did not)\s+(been\s+)?(receiv|got|get|arriv|see)", re.I)
+
+
+def service_refused(msg):
+    from .service import Refused
+    return Refused(msg)
+
+
 def fraud_signals(messages):
     hits = []
     for m in messages or []:
@@ -52,6 +60,9 @@ class RulesAgent:
                 return "CLOSE", [why, "The payment itself is complete; the operator closes it with a note."]
             return "ESCALATE", reasons + [why, "Code has frozen new payments on this incident until a person resolves the alarm."]
         if "CLOSE" in allowed:
+            if any(NOT_RECEIVED.search(m or "") for m in ev["supplier_messages"]):
+                return "ESCALATE", reasons + ["Airwallex shows this invoice PAID, but the supplier says they never got it. Do NOT pay again: send them the "
+                                              "Airwallex payment confirmation (transfer ID in the receipt) and ask their bank to trace it."]
             return "CLOSE", reasons + ["A transfer on this incident is confirmed PAID by Airwallex and every other payment has a final status."]
         if fraud:
             return "ESCALATE", reasons
@@ -140,11 +151,25 @@ class ClaudeAgent:
         return d, reasons
 
 
+_last_run = {}
+
+
 def run(service, incident_id, agent):
+    # TRM-11: never decide on stale state - re-read every non-final payment from Airwallex first.
+    for p in service.s.q("SELECT request_id,status FROM payments WHERE incident_id=? AND status NOT IN ('PAID','CANCELLED')", incident_id):
+        try:
+            service.reconcile(p["request_id"])
+        except Exception:
+            pass  # a failed refresh leaves the payment non-final, which can only make the agent more careful
+    # FLT-13: no tight decision loops
+    k = (id(service), incident_id)
+    if service.now() - _last_run.get(k, -1e9) < 3:
+        raise service_refused("the agent was asked about this incident less than 3 seconds ago")
+    _last_run[k] = service.now()
     ev = service.evidence(incident_id)
     allowed = service.allowed_actions(incident_id)
     t0 = time.time()
     decision, reasons = agent.decide(ev, allowed)
     used_llm = getattr(agent, "used_llm", False)
-    service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided")
+    service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided", evidence=ev)
     return {"decision": decision, "reasons": reasons, "allowed": allowed, "agent": "llm" if used_llm else "rules", "ms": int((time.time() - t0) * 1000)}

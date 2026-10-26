@@ -141,7 +141,7 @@ function render() {
   lg.append(ol); d.append(lg);
 }
 
-$("#newinc").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act("/api/incidents", { invoice: f.get("invoice"), amount: f.get("amount") }, r => { current = r.id; return "Incident opened"; }); };
+$("#newinc").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act("/api/incidents", { invoice: f.get("invoice"), amount: f.get("amount"), separate_invoice: !!f.get("separate_invoice") }, r => { current = r.id; return "Incident opened"; }); };
 $("#kill").onclick = () => S?.policy.killed ? act("/api/unkill", {}, "Payments resumed") : act("/api/kill", {}, "Everything stopped - no payment can be sent");
 $("#gateform").onsubmit = e => { e.preventDefault(); token = $("#tok").value; try { sessionStorage.setItem("op-token", token); } catch {} load().catch(err => toast(err.message, true)); };
 load().catch(() => { $("#gate").hidden = false; });

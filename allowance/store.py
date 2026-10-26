@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS policy(
   max_fee INTEGER NOT NULL DEFAULT 2500,
   changed_payee_cap INTEGER NOT NULL DEFAULT 10000,      -- first payments after a bank-detail change stay small
   changed_payee_window INTEGER NOT NULL DEFAULT 86400,
+  max_attempts INTEGER NOT NULL DEFAULT 3,               -- original + at most 2 replacements (each failure burns a fee)
+  max_incidents_per_hour INTEGER NOT NULL DEFAULT 30,
+  allowed_countries TEXT NOT NULL DEFAULT 'US',
   dual_approval_over INTEGER NOT NULL DEFAULT 50000
 );
 CREATE TABLE IF NOT EXISTS beneficiaries(
@@ -169,7 +172,7 @@ class Store:
             (currency, per_tx_cap, daily_cap),
         )
         for k, v in extra.items():
-            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over", "changed_payee_cap", "changed_payee_window"):
+            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over", "changed_payee_cap", "changed_payee_window", "max_attempts", "max_incidents_per_hour", "allowed_countries"):
                 self.db.execute(f"UPDATE policy SET {k}=? WHERE id=1", (v,))
 
     def committed_today_for(self, beneficiary_id, now=None):
@@ -184,6 +187,22 @@ class Store:
 
     def policy(self):
         return self.one("SELECT * FROM policy WHERE id=1")
+
+    def validate_policy(self):
+        """Refuse to run with limits that make no sense (MON-10)."""
+        p = self.policy()
+        problems = []
+        if not (0 < p["per_tx_cap"] <= p["daily_cap"]):
+            problems.append("per-payment cap must be positive and not above the daily cap")
+        if not (0 < p["per_supplier_daily_cap"] <= p["daily_cap"]):
+            problems.append("per-payee cap must be positive and not above the daily cap")
+        if p["dual_approval_over"] > p["per_tx_cap"]:
+            problems.append("co-sign threshold above the per-payment cap means co-sign never applies")
+        if not (1 <= p["max_attempts"] <= 5):
+            problems.append("max attempts must be 1-5")
+        if problems:
+            raise ValueError("unsafe policy: " + "; ".join(problems))
+        return True
 
     def committed_today(self, now=None):
         """Every payment that might cost money, counted against today's cap -

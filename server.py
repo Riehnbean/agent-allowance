@@ -149,7 +149,8 @@ def handle(method, path, body, op="operator"):
     if path == "/api/incidents":
         ben = ensure_beneficiary()
         iid = SVC.open_incident(body.get("supplier") or "Maple Lumber", body.get("invoice") or f"INV-{int(time.time()) % 10000}",
-                                ben, cents(body.get("amount", "250")), "USD", deadline=time.time() + float(body.get("deadline_hours", 24)) * 3600)
+                                ben, cents(body.get("amount", "250")), "USD", deadline=time.time() + float(body.get("deadline_hours", 24)) * 3600,
+                                allow_similar=bool(body.get("separate_invoice")))
         return {"id": iid}
     if len(p) >= 4 and p[1] == "incidents":
         iid, act = int(p[2]), p[3]
@@ -275,6 +276,7 @@ def sweeper():
 
 
 if __name__ == "__main__":
+    SVC.s.validate_policy()
     if not SVC._meta("orphan_scan_since"):
         SVC._meta("orphan_scan_since", str(time.time()))  # transfers made before the desk existed aren't orphans
     sweeper()

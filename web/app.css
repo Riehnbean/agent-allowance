@@ -43,3 +43,4 @@ input,select{background:#0e1318;color:var(--ink);border:1px solid #334452;border
 .alert{background:#3a1718;border:1px solid #7a2a2b;color:#ffd0d0;border-radius:10px;padding:10px 14px;margin-bottom:12px}
 .note{min-width:240px}
 button.primary:disabled{background:#2a333b;border-color:#3a4652;color:#8796a4}
+.row label.chk{flex-direction:row;align-items:center;gap:6px}.row label.chk input{width:auto}

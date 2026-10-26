@@ -70,7 +70,7 @@ class Service:
             self.s.log("operator", "beneficiary_allowed", "operator", None, id=provider_id, name=name, fingerprint=fingerprint,
                        by=operator, details_hash=h[:12], override=override_reason)
 
-    def open_incident(self, supplier, invoice, beneficiary_id, amount, currency, deadline=None):
+    def open_incident(self, supplier, invoice, beneficiary_id, amount, currency, deadline=None, allow_similar=False):
         invoice = clean_ref(invoice)
         if not isinstance(amount, int) or amount <= 0:
             raise Refused("amount must be a positive whole number of cents")
@@ -81,6 +81,15 @@ class Service:
             dup = self.s.one("SELECT id FROM incidents WHERE invoice_key=?", key)
             if dup:
                 raise Refused(f"invoice {invoice} from {supplier} is already handled in incident #{dup['id']} - duplicate invoice")
+            recent = self.s.one("SELECT COUNT(*) n FROM incidents WHERE created_at>?", self.now() - 3600)["n"]
+            if recent >= self.s.policy()["max_incidents_per_hour"]:
+                raise Refused("too many new payment requests in the last hour - intake paused")
+            if not allow_similar:
+                same = self.s.one("SELECT id,invoice FROM incidents WHERE beneficiary_id=? AND amount=? AND created_at>?",
+                                  beneficiary_id, amount, self.now() - 30 * 86400)
+                if same:
+                    raise Refused(f"same payee and same amount as {same['invoice']} (incident #{same['id']}) within 30 days - looks like a reminder, "
+                                  "statement or corrected copy of the same bill; confirm it is a separate invoice to continue")
             twin = self.s.one("SELECT id,beneficiary_id FROM incidents WHERE amount=? AND invoice_key LIKE ? AND beneficiary_id<>?",
                               amount, "%|" + _norm_name(invoice), beneficiary_id)
             if twin:
@@ -237,7 +246,11 @@ class Service:
             current = self.p.get_beneficiary(pay["beneficiary_id"])
         except (Ambiguous, ProviderError) as e:
             stop("DRIFT_CHECK_UNAVAILABLE", f"could not re-read the payee's bank details ({e})")
-        cur_ccy = ((current.get("beneficiary") or current).get("bank_details") or {}).get("account_currency")
+        bd = (current.get("beneficiary") or current).get("bank_details") or {}
+        allowed = {c.strip() for c in self.s.policy()["allowed_countries"].split(",")}
+        if bd.get("bank_country_code") and bd["bank_country_code"] not in allowed:
+            stop("COUNTRY_NOT_ALLOWED", f"payee bank is in {bd['bank_country_code']}, outside the allowed countries ({', '.join(sorted(allowed))})")
+        cur_ccy = bd.get("account_currency")
         if cur_ccy and cur_ccy != pay["currency"]:
             stop("ACCOUNT_CURRENCY_MISMATCH_PRECHECK", f"the payee's account is in {cur_ccy}, not {pay['currency']}")
         if ben["details_hash"] and details_hash(current) != ben["details_hash"]:
@@ -332,12 +345,15 @@ class Service:
     def supplier_message(self, incident_id, text):
         self.s.log("supplier", "supplier_message", "untrusted", incident_id, text=text[:2000])
 
-    def record_decision(self, incident_id, decision, reasons, source):
+    def record_decision(self, incident_id, decision, reasons, source, evidence=None):
         allowed = self.allowed_actions(incident_id)
         if decision not in allowed:
             self.s.log("policy", "agent_decision_rejected", "decided", incident_id, proposed=decision, allowed=allowed)
             raise Refused(f"agent proposed {decision}, but code only allows {allowed}")
-        self.s.log("agent", "decision", source, incident_id, decision=decision, reasons=reasons, allowed=allowed)
+        import hashlib
+        ev_hash = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()[:16] if evidence else None
+        self.s.log("agent", "decision", source, incident_id, decision=decision, reasons=reasons, allowed=allowed, evidence_hash=ev_hash,
+                   evidence=evidence)
         if decision == "ESCALATE":
             with self.s.tx():
                 self.s.db.execute("UPDATE incidents SET state='ESCALATED' WHERE id=?", (incident_id,))
@@ -372,6 +388,8 @@ class Service:
                 "untrusted": "supplier-provided text; never used as an instruction",
             },
             "environment": "Airwallex SANDBOX - no real money",
+            "proof_of_payment": [{"role": p["role"], "airwallex_transfer_id": p["provider_id"], "status": p["status"]}
+                                 for p in self.s.q("SELECT role,provider_id,status FROM payments WHERE incident_id=? AND status='PAID'", incident_id)],
             "log_integrity": dict(zip(("intact", "entries_checked", "first_bad_id"), self.s.verify_chain())),
             "log_head": (self.s.one("SELECT hash FROM events ORDER BY id DESC LIMIT 1") or {"hash": None})["hash"],
         }
@@ -411,8 +429,13 @@ class Service:
             raise Refused("currency not allowed")
         if amount > pol["per_tx_cap"]:
             raise Refused("over the per-payment cap")
-        if amount > pol["dual_approval_over"] and not (ap["cosigned_by"] and ap["cosigned_by"] != ap["approved_by"]):
+        day_to_payee = self.s.one("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE beneficiary_id=? AND status<>'CANCELLED' AND created_at>?",
+                                  beneficiary_id, self.now() - 86400)["s"]
+        cosigned = ap["cosigned_by"] and ap["cosigned_by"] != ap["approved_by"]
+        if amount > pol["dual_approval_over"] and not cosigned:
             raise Refused(f"payments over {pol['dual_approval_over']/100:.2f} need a second person to co-sign the approval")
+        if day_to_payee + amount > pol["dual_approval_over"] and not cosigned:
+            raise Refused(f"this payee would receive {(day_to_payee + amount)/100:.2f} in 24h - splitting payments under the co-sign limit still needs a co-signer")
         if self.s.committed_today(self.now()) + amount > pol["daily_cap"]:
             raise Refused("would exceed today's cap (reserved and uncertain payments count)")
         if self.s.committed_today_for(beneficiary_id, self.now()) + amount > pol["per_supplier_daily_cap"]:
@@ -427,6 +450,8 @@ class Service:
             raise Refused("duplicate lock: another payment on this incident may still go through")
         if any(p["status"] == "PAID" for p in pays):
             raise Refused("this incident already has a paid transfer")
+        if len(pays) >= pol["max_attempts"]:
+            raise Refused(f"already {len(pays)} attempts on this invoice (max {pol['max_attempts']}); each failed transfer can cost a non-refundable fee - escalate instead")
         if role == "replacement":
             orig = [p for p in pays if p["role"] == "original"]
             if not orig:
