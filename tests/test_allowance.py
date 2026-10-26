@@ -422,6 +422,47 @@ class FourEyes(Base):
         self.assertEqual(self.fake.calls, 0)
 
 
+class Holes(Base):
+    def test_stop_blocks_resubmit_of_unknown(self):
+        iid = self.incident()
+        self.fake.lose_response_next = True
+        p = self.pay_original(iid)
+        del self.fake.by_req[p["request_id"]]  # pretend it never reached Airwallex
+        self.fake.by_id.clear()
+        self.svc.kill("zach")
+        with self.assertRaisesRegex(Refused, "only look"):
+            self.svc.reconcile(p["request_id"])
+        self.assertEqual(self.fake.calls, 1)
+
+    def test_crash_after_reserve_is_recovered_once(self):
+        iid = self.incident()
+        ap = self.svc.approve(iid, "original", "zach")
+        orig = self.svc.submit
+        self.svc.submit = lambda rid: self.svc.payment(rid)  # crash before the provider call
+        p = self.svc.pay(ap, "original", BEN, 25_000, "USD")
+        self.svc.submit = orig
+        self.assertEqual(self.svc.reconcile(p["request_id"])["status"], "RESERVED")  # too fresh, could be in progress
+        self.t += 120
+        self.assertEqual(self.svc.reconcile(p["request_id"])["status"], "SCHEDULED")
+        self.svc.reconcile(p["request_id"])
+        self.assertEqual(len(self.fake.by_req), 1)
+
+    def test_bad_details_replacement_only_after_reopen(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fail_with(p["request_id"], "ACCOUNT_CLOSED")
+        run(self.svc, iid, RulesAgent())  # escalates
+        ap = self.svc.approve(iid, "replacement", "zach")
+        with self.assertRaisesRegex(Refused, "ESCALATED|reopen"):
+            self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
+        with self.assertRaisesRegex(Refused, "note"):
+            self.svc.reopen(iid, "zach", "ok")
+        self.t += 10
+        self.svc.reopen(iid, "zach", "Called Maple on the number from our 2024 contract; they confirmed the account and fixed it on their side.")
+        ap2 = self.svc.approve(iid, "replacement", "zach")
+        self.assertEqual(self.svc.pay(ap2, "replacement", BEN, 25_000, "USD")["status"], "SCHEDULED")
+
+
 class Limits(Base):
     def test_per_supplier_cap(self):
         self.svc.s.db.execute("UPDATE policy SET per_supplier_daily_cap=40000")

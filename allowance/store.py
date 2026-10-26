@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS incidents(
   state TEXT NOT NULL DEFAULT 'OPEN',   -- OPEN, ESCALATED, RESOLVED
   invoice_key TEXT,                     -- normalized supplier+invoice, for duplicate-invoice detection
   alert TEXT,                           -- latest anomaly that forced escalation
+  reopened_at REAL,                     -- operator reopened after investigating (note in the log)
   created_at REAL NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_incident_per_invoice ON incidents(invoice_key);

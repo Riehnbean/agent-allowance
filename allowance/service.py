@@ -102,6 +102,21 @@ class Service:
             self.s.log("operator", "approved", "operator", incident_id, approval_id=cur.lastrowid, role=role, beneficiary_id=b, amount=a, currency=c, ttl=ttl, by=operator)
         return cur.lastrowid
 
+    def reopen(self, incident_id, operator, note):
+        """A person investigated an escalation (e.g. called the supplier on a known number and
+        re-verified the payee). Reopening clears the alarm and is the ONLY way to allow a replacement
+        after a non-retryable failure. The note is kept forever in the evidence log."""
+        if not note or len(note.strip()) < 15:
+            raise Refused("reopening needs a note of what you checked (at least a sentence)")
+        inc = self._incident(incident_id)
+        if inc["state"] == "RESOLVED":
+            raise Refused("incident is already resolved")
+        if any(p["status"] in IN_FLIGHT for p in self.s.q("SELECT status FROM payments WHERE incident_id=?", incident_id)):
+            raise Refused("a payment on this incident may still go through - wait for a final status first")
+        with self.s.tx():
+            self.s.db.execute("UPDATE incidents SET state='OPEN', alert=NULL, reopened_at=? WHERE id=?", (self.now(), incident_id))
+            self.s.log("operator", "incident_reopened", "operator", incident_id, by=operator, note=note.strip()[:1000], cleared_alert=inc["alert"])
+
     def cosign(self, approval_id, operator):
         """Second pair of eyes for large payments: a DIFFERENT operator must co-sign."""
         with self.s.tx():
@@ -160,6 +175,10 @@ class Service:
     def submit(self, request_id):
         """Send (or re-send with the SAME request_id) a reserved payment."""
         pay = self.s.one("SELECT * FROM payments WHERE request_id=?", request_id)
+        if self.s.policy()["killed"] and pay["status"] == "UNKNOWN":
+            # We don't know if the first attempt reached Airwallex. While STOP is on we only look, never re-send.
+            self.s.log("policy", "resubmit_blocked_by_kill", "decided", pay["incident_id"], request_id=request_id)
+            raise Refused("STOP is on: will only look this payment up, not re-send it")
         if self.s.policy()["killed"] and pay["status"] == "RESERVED":
             self._set(request_id, "CANCELLED", "none", failure_type="KILLED_BEFORE_SUBMIT", failure_message="kill switch was on")
             self.s.log("policy", "payment_blocked_by_kill", "decided", pay["incident_id"], request_id=request_id)
@@ -218,6 +237,11 @@ class Service:
             self.s.log("provider", "reconcile_ambiguous", "observed", pay["incident_id"], request_id=request_id, error=str(e))
             return self.payment(request_id)
         if t is None:
+            if pay["status"] == "RESERVED" and self.now() - pay["updated_at"] >= 60:
+                # Crashed between reserving and sending. Airwallex has never heard of this request_id,
+                # so sending it now (same id, full pre-send checks, STOP respected) is the original intent.
+                self.s.log("system", "recovering_stale_reservation", "decided", pay["incident_id"], request_id=request_id)
+                return self.submit(request_id)
             if pay["status"] == "UNKNOWN":
                 # Not found yet. Re-submitting with the SAME request_id cannot double pay:
                 # Airwallex rejects a duplicate request_id and returns the original instead.
@@ -256,7 +280,7 @@ class Service:
             "kill_switch": bool(pol["killed"]),
             "budget_left_today": pol["daily_cap"] - self.s.committed_today(self.now()),
             "now": self.now(),
-            "supplier_messages": [json.loads(e["body"]).get("text") for e in self.s.q("SELECT body FROM events WHERE incident_id=? AND kind='supplier_message' ORDER BY id", incident_id)],
+            "supplier_messages": [json.loads(e["body"]).get("text") for e in self.s.q("SELECT body FROM events WHERE incident_id=? AND kind='supplier_message' ORDER BY id DESC LIMIT 5", incident_id)][::-1],
         }
 
     def allowed_actions(self, incident_id):
@@ -374,8 +398,8 @@ class Service:
             last = pays[-1]
             if last["status"] != "CANCELLED" or last["status_source"] != "provider_get":
                 raise Refused("previous payment is not confirmed failed by a fresh Airwallex lookup")
-            if last["failure_type"] not in RETRYABLE:
-                raise Refused(f"failure type {last['failure_type']} is not safe to retry automatically")
+            if last["failure_type"] not in RETRYABLE and not (inc["reopened_at"] and inc["reopened_at"] > last["updated_at"]):
+                raise Refused(f"failure type {last['failure_type']} is not safe to retry automatically - a person must investigate and reopen the incident first")
         elif pays:
             raise Refused("an original payment already exists for this incident")
 

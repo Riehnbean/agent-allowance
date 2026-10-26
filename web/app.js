@@ -100,7 +100,10 @@ function render() {
   const note = el("input", "note"); note.placeholder = i.alert ? "Resolution note (required: what you checked)" : "Optional note"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
   const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); const r = await api(`/api/incidents/${i.id}/receipt`); const a = el("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: "application/json" })); a.download = `receipt-${i.invoice}.json`; a.click(); };
-  ops.append(ap, pay, note, close, rc); op.append(ops);
+  const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
+  reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
+  if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";
+  ops.append(ap, pay, note, reopen, close, rc); op.append(ops);
   if (unused && i.amount > S.policy.dual_approval_over && !unused.cosigned_by) {
     const cs = el("form", "row"); const ct = el("input"); ct.type = "password"; ct.placeholder = "Second person's operator token";
     const cb = el("button", null, "Co-sign (second person)"); cs.append(ct, cb);

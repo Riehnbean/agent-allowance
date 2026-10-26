@@ -170,6 +170,9 @@ def handle(method, path, body, op="operator"):
         if act == "supplier":
             SVC.supplier_message(iid, body.get("text", ""))
             return {}
+        if act == "reopen":
+            SVC.reopen(iid, op, body.get("note", ""))
+            return {}
         if act == "close":
             SVC.close(iid, op, note=body.get("note"))
             return {}
