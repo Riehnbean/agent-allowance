@@ -114,6 +114,20 @@ class Airwallex:
         items = r.get("items", [])
         return items[0] if items else None
 
+    def list_transfers_since(self, since_unix, pages=5):
+        """Every transfer created on this Airwallex account since a time - used to spot transfers
+        that did NOT come through this desk (a leaked key, someone clicking in the dashboard)."""
+        import datetime
+        iso = datetime.datetime.fromtimestamp(since_unix, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%%2B0000")
+        out = []
+        for n in range(pages):
+            r = self._raw("GET", f"/transfers?from_created_at={iso}&page_size=100&page_num={n}")
+            items = r.get("items", [])
+            out += items
+            if len(items) < 100:
+                break
+        return out
+
     def simulate(self, transfer_id, next_status, failure_type=None):
         body = {"next_status": next_status}
         if failure_type:

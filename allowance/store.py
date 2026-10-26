@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS policy(
   per_supplier_daily_cap INTEGER NOT NULL DEFAULT 150000,
   max_payments_per_hour INTEGER NOT NULL DEFAULT 10,
   max_fee INTEGER NOT NULL DEFAULT 2500,
+  changed_payee_cap INTEGER NOT NULL DEFAULT 10000,      -- first payments after a bank-detail change stay small
+  changed_payee_window INTEGER NOT NULL DEFAULT 86400,
   dual_approval_over INTEGER NOT NULL DEFAULT 50000
 );
 CREATE TABLE IF NOT EXISTS beneficiaries(
@@ -24,7 +26,8 @@ CREATE TABLE IF NOT EXISTS beneficiaries(
   approved_by TEXT NOT NULL,
   approved_at REAL NOT NULL,
   details_hash TEXT,             -- sha256 of the full bank details at approval time (drift check)
-  account_key TEXT               -- account+routing only, to spot one account reused under different names
+  account_key TEXT,              -- account+routing only, to spot one account reused under different names
+  details_changed_at REAL        -- when re-verified details differed from the previous ones
 );
 CREATE TABLE IF NOT EXISTS incidents(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +55,7 @@ CREATE TABLE IF NOT EXISTS approvals(
   approved_by TEXT NOT NULL,
   used_by_request TEXT,
   cosigned_by TEXT,
+  payee_hash TEXT,                      -- bank-details hash the approver saw; must still match at send time
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS payments(
@@ -82,8 +86,12 @@ CREATE TABLE IF NOT EXISTS events(
   actor TEXT NOT NULL,                  -- operator | agent | provider | policy | system
   kind TEXT NOT NULL,
   provenance TEXT NOT NULL,             -- observed (from Airwallex) | decided (code) | model (LLM text) | operator | untrusted (supplier text)
-  body TEXT NOT NULL
+  body TEXT NOT NULL,
+  prev_hash TEXT,                       -- hash chain: editing or removing any past row breaks every later hash
+  hash TEXT
 );
+CREATE TABLE IF NOT EXISTS webhook_events(id TEXT PRIMARY KEY, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT,'events are append-only'); END;
 """
@@ -125,10 +133,34 @@ class Store:
         return self.db.execute(sql, a).fetchone()
 
     def log(self, actor, kind, provenance, incident_id=None, **body):
-        self.db.execute(
-            "INSERT INTO events(at,incident_id,actor,kind,provenance,body) VALUES(?,?,?,?,?,?)",
-            (time.time(), incident_id, actor, kind, provenance, json.dumps(body, default=str)),
-        )
+        own = not self.db.in_transaction
+        if own:
+            self.db.execute("BEGIN IMMEDIATE")
+        try:
+            prev = self.db.execute("SELECT hash FROM events ORDER BY id DESC LIMIT 1").fetchone()
+            prev = prev["hash"] if prev and prev["hash"] else "GENESIS"
+            at, b = time.time(), json.dumps(body, default=str, sort_keys=True)
+            h = _chain(prev, at, incident_id, actor, kind, provenance, b)
+            self.db.execute(
+                "INSERT INTO events(at,incident_id,actor,kind,provenance,body,prev_hash,hash) VALUES(?,?,?,?,?,?,?,?)",
+                (at, incident_id, actor, kind, provenance, b, prev, h),
+            )
+            if own:
+                self.db.execute("COMMIT")
+        except Exception:
+            if own:
+                self.db.execute("ROLLBACK")
+            raise
+
+    def verify_chain(self):
+        """Recompute every hash. Returns (ok, rows_checked, first_bad_id)."""
+        prev, n = "GENESIS", 0
+        for e in self.db.execute("SELECT * FROM events ORDER BY id"):
+            n += 1
+            if e["prev_hash"] != prev or e["hash"] != _chain(prev, e["at"], e["incident_id"], e["actor"], e["kind"], e["provenance"], e["body"]):
+                return False, n, e["id"]
+            prev = e["hash"]
+        return True, n, None
 
     # policy ----------------------------------------------------------------
     def init_policy(self, currency="USD", per_tx_cap=100000, daily_cap=200000, **extra):
@@ -137,7 +169,7 @@ class Store:
             (currency, per_tx_cap, daily_cap),
         )
         for k, v in extra.items():
-            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over"):
+            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over", "changed_payee_cap", "changed_payee_window"):
                 self.db.execute(f"UPDATE policy SET {k}=? WHERE id=1", (v,))
 
     def committed_today_for(self, beneficiary_id, now=None):
@@ -164,6 +196,11 @@ class Store:
             day0,
         )
         return r["s"]
+
+
+def _chain(prev, at, incident_id, actor, kind, provenance, body):
+    import hashlib
+    return hashlib.sha256("|".join(map(str, (prev, repr(at), incident_id, actor, kind, provenance, body))).encode()).hexdigest()
 
 
 class _Tx:

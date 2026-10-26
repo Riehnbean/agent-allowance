@@ -6,6 +6,9 @@ import tempfile
 import threading
 import unittest
 import uuid
+import warnings
+
+warnings.simplefilter("ignore", ResourceWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from allowance.adapter import Ambiguous, ProviderError, minor_to_str, str_to_minor  # noqa: E402
@@ -47,6 +50,9 @@ class FakeAirwallex:
 
     def get_beneficiary(self, bid):
         return self.bens.setdefault(bid, bank(name=bid))
+
+    def list_transfers_since(self, since):
+        return [dict(t) for t in self.by_id.values()]
 
     def usd_balance_minor(self):
         return self.balance
@@ -484,6 +490,79 @@ class FailClosed(Base):
         with self.assertRaisesRegex(sqlite3.IntegrityError, "incident_id"):
             self.svc.s.db.execute("INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,created_at,updated_at)"
                                   " VALUES('x',?,'replacement',?,?,1,'USD','RESERVED',0,0)", (iid, ap, BEN))
+
+
+class TopFifteen(Base):
+    def test_request_id_is_deterministic_per_attempt(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        import uuid as _u
+        self.assertEqual(p["request_id"], str(_u.uuid5(__import__("allowance.service", fromlist=["REQ_NS"]).REQ_NS,
+                                                         f"{self.svc._desk_id()}:incident:{iid}:attempt:1")))
+
+    def test_approval_bound_to_payee_details_it_saw(self):
+        iid = self.incident()
+        ap = self.svc.approve(iid, "original", "zach")
+        self.fake.bens[BEN] = bank(acct="444455556666")
+        self.svc.allow_beneficiary(BEN, "Maple Lumber Supply LLC", "****6666", "zach", override_reason="re-verified")
+        with self.assertRaisesRegex(Refused, "changed after this approval"):
+            self.svc.pay(ap, "original", BEN, 25_000, "USD")
+
+    def test_changed_payee_small_payments_first(self):
+        self.fake.bens[BEN] = bank(acct="444455556666")
+        self.svc.allow_beneficiary(BEN, "Maple Lumber Supply LLC", "****6666", "zach", override_reason="called supplier")
+        iid = self.incident()
+        ap = self.svc.approve(iid, "original", "zach")
+        with self.assertRaisesRegex(Refused, "changed recently"):
+            self.svc.pay(ap, "original", BEN, 25_000, "USD")
+        small = self.incident(amount=5_000)
+        self.assertEqual(self.pay_original(small, amount=5_000)["status"], "SCHEDULED")
+        self.t += 86400 + 1
+        big = self.incident()
+        self.assertEqual(self.pay_original(big)["status"], "SCHEDULED")
+
+    def test_webhook_event_id_dedupe(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fake.simulate(p["provider_id"], "SENT")
+        ev = {"id": "evt_1", "name": "payout.transfer.sent", "data": {"object": {"id": p["provider_id"]}}}
+        self.assertIsNotNone(self.svc.on_webhook(ev))
+        self.t += 10
+        self.assertIsNone(self.svc.on_webhook(ev))
+
+    def test_orphan_transfer_stops_the_desk(self):
+        iid = self.incident()
+        self.pay_original(iid)
+        self.assertEqual(self.svc.scan_orphans(since=0), [])
+        self.fake.create_transfer("not-from-desk", BEN, 99_900, "USD", "manual")  # someone used the key elsewhere
+        new = self.svc.scan_orphans(since=0)
+        self.assertEqual(len(new), 1)
+        self.assertTrue(self.svc.s.policy()["killed"])
+        self.assertEqual(self.svc.scan_orphans(since=0), [])  # reported once
+
+    def test_paid_is_rechecked_for_days(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fake.simulate(p["provider_id"], "SENT")
+        self.fake.simulate(p["provider_id"], "PAID")
+        self.svc.reconcile(p["request_id"])
+        self.svc.close(iid, "zach")
+        self.fake.simulate(p["provider_id"], "FAILED", "BENEFICIARY_BANK_RETURNED")
+        self.t += 2 * 3600
+        self.svc.sweep()
+        self.assertEqual(self.svc.payment(p["request_id"])["anomaly"], "PAID_THEN_CANCELLED")
+
+    def test_hash_chain_detects_tampering(self):
+        iid = self.incident()
+        self.pay_original(iid)
+        ok, n, bad = self.svc.s.verify_chain()
+        self.assertTrue(ok)
+        self.assertGreater(n, 3)
+        self.svc.s.db.execute("DROP TRIGGER events_no_update")  # an admin bypasses the trigger...
+        self.svc.s.db.execute("UPDATE events SET body='{}' WHERE id=2")
+        ok, n, bad = self.svc.s.verify_chain()
+        self.assertFalse(ok)  # ...and the chain still exposes it
+        self.assertEqual(bad, 2)
 
 
 class Limits(Base):

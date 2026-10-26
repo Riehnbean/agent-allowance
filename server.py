@@ -80,6 +80,8 @@ def state():
                      "decision": json.loads(last["body"]) | {"at": last["at"], "provenance": last["provenance"]} if last else None, "events": ev})
     pol = dict(s.policy())
     pol["committed_today"] = s.committed_today()
+    ok, n, bad = s.verify_chain()
+    pol["log"] = {"intact": ok, "entries": n, "first_bad": bad}
     return {"me": None, "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": "claude" if AGENT.key else "rules (no LLM key set)", "drop_armed": PROV.armed,
             "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only"}
@@ -213,10 +215,23 @@ class H(BaseHTTPRequestHandler):
             ctype = {"js": "application/javascript", "css": "text/css"}.get(f.rsplit(".", 1)[-1], "text/html; charset=utf-8")
             return self._send(200, open(os.path.join(HERE, "web", f), "rb").read(), ctype)
         if method == "POST" and path == "/webhook/airwallex":
-            # Unauthenticated by design: a webhook only makes us re-read Airwallex; it never sets a status.
+            # A webhook only makes us re-read Airwallex; it never sets a status by itself. If a signing
+            # secret is configured, unsigned / stale / forged deliveries are dropped before that.
             n = min(int(self.headers.get("Content-Length") or 0), 65536)
+            raw = self.rfile.read(n) or b"{}"
+            secret = os.environ.get("AWX_WEBHOOK_SECRET")
+            if secret:
+                ts, sig = self.headers.get("x-timestamp", ""), self.headers.get("x-signature", "")
+                good = hmac.new(secret.encode(), ts.encode() + raw, "sha256").hexdigest()
+                try:
+                    fresh = abs(time.time() * 1000 - float(ts)) < 5 * 60 * 1000 or abs(time.time() - float(ts)) < 300
+                except ValueError:
+                    fresh = False
+                if not (fresh and hmac.compare_digest(good, sig)):
+                    SVC.s.log("provider", "webhook_rejected", "untrusted", None, reason="bad signature or timestamp")
+                    return self._send(401, {"error": "bad signature"})
             try:
-                SVC.on_webhook(json.loads(self.rfile.read(n) or b"{}"))
+                SVC.on_webhook(json.loads(raw))
             except Exception:
                 pass
             return self._send(200, {"ok": True})
@@ -253,12 +268,15 @@ def sweeper():
             time.sleep(60)
             try:
                 SVC.sweep(stale_after=300)
+                SVC.scan_orphans()
             except Exception as e:  # never let the safety net crash the desk
                 print("sweep error:", e)
     threading.Thread(target=loop, daemon=True).start()
 
 
 if __name__ == "__main__":
+    if not SVC._meta("orphan_scan_since"):
+        SVC._meta("orphan_scan_since", str(time.time()))  # transfers made before the desk existed aren't orphans
     sweeper()
     if not OPERATORS:
         sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")

@@ -36,6 +36,9 @@ DELIBERATE = {"RECALL_REQUESTED", "CLIENT_REQUESTED", "BENEFICIARY_REQUESTED", "
 from .store import FINAL  # noqa: E402
 
 
+REQ_NS = uuid.UUID("5b1e8a0e-6b8f-4d0a-9a51-0a1d5f2c7e11")
+
+
 class Refused(Exception):
     """A policy check failed. The reason is safe to show the operator and the agent."""
 
@@ -54,13 +57,15 @@ class Service:
             details = self.p.get_beneficiary(provider_id)
         h, ak = details_hash(details), account_key(details)
         with self.s.tx():
+            old = self.s.one("SELECT details_hash, details_changed_at FROM beneficiaries WHERE id=?", provider_id)
+            changed_at = (self.now() if old and old["details_hash"] and old["details_hash"] != h else (old["details_changed_at"] if old else None))
             twin = self.s.one("SELECT id,name FROM beneficiaries WHERE account_key=? AND id<>?", ak, provider_id)
             if twin and _norm_name(twin["name"]) != _norm_name(name) and not override_reason:
                 self.s.log("policy", "beneficiary_refused", "decided", None, id=provider_id, name=name, reason="same bank account as " + twin["name"])
                 raise Refused(f"this bank account is already on file under a different supplier name ({twin['name']}) - a common money-mule pattern; needs an override reason")
             self.s.db.execute(
-                "INSERT OR REPLACE INTO beneficiaries(id,name,bank_fingerprint,approved_by,approved_at,details_hash,account_key) VALUES(?,?,?,?,?,?,?)",
-                (provider_id, name, fingerprint, operator, self.now(), h, ak),
+                "INSERT OR REPLACE INTO beneficiaries(id,name,bank_fingerprint,approved_by,approved_at,details_hash,account_key,details_changed_at) VALUES(?,?,?,?,?,?,?,?)",
+                (provider_id, name, fingerprint, operator, self.now(), h, ak, changed_at),
             )
             self.s.log("operator", "beneficiary_allowed", "operator", None, id=provider_id, name=name, fingerprint=fingerprint,
                        by=operator, details_hash=h[:12], override=override_reason)
@@ -97,9 +102,10 @@ class Service:
         if ttl > 24 * 3600:
             raise Refused("approvals expire within 24 hours")
         with self.s.tx():
+            ph = self.s.one("SELECT details_hash FROM beneficiaries WHERE id=?", b)
             cur = self.s.db.execute(
-                "INSERT INTO approvals(incident_id,role,beneficiary_id,amount,currency,expires_at,approved_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (incident_id, role, b, a, c, self.now() + ttl, operator, self.now()),
+                "INSERT INTO approvals(incident_id,role,beneficiary_id,amount,currency,expires_at,approved_by,payee_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (incident_id, role, b, a, c, self.now() + ttl, operator, ph["details_hash"] if ph else None, self.now()),
             )
             self.s.log("operator", "approved", "operator", incident_id, approval_id=cur.lastrowid, role=role, beneficiary_id=b, amount=a, currency=c, ttl=ttl, by=operator)
         return cur.lastrowid
@@ -132,6 +138,14 @@ class Service:
             self.s.db.execute("UPDATE approvals SET cosigned_by=? WHERE id=?", (operator, approval_id))
             self.s.log("operator", "cosigned", "operator", ap["incident_id"], approval_id=approval_id, by=operator)
 
+    def _desk_id(self):
+        r = self.s.one("SELECT v FROM meta WHERE k='desk_id'")
+        if r:
+            return r["v"]
+        v = str(uuid.uuid4())
+        self.s.db.execute("INSERT OR IGNORE INTO meta VALUES('desk_id',?)", (v,))
+        return self.s.one("SELECT v FROM meta WHERE k='desk_id'")["v"]
+
     def kill(self, operator, reason="operator stop"):
         with self.s.tx():
             self.s.db.execute("UPDATE policy SET killed=1, killed_reason=? WHERE id=1", (reason,))
@@ -145,10 +159,9 @@ class Service:
     # ---------------------------------------------------------------- pay
     def pay(self, approval_id, role, beneficiary_id, amount, currency):
         """Reserve + submit one payment under an approval. Terms must match the approval exactly."""
-        request_id = str(uuid.uuid4())
         try:
             try:
-                return self._pay(request_id, approval_id, role, beneficiary_id, amount, currency)
+                return self._pay(None, approval_id, role, beneficiary_id, amount, currency)
             except sqlite3.IntegrityError as e:
                 raise Refused(f"database duplicate lock: {e}") from None
         except Refused as e:
@@ -166,6 +179,10 @@ class Service:
             iid = ap["incident_id"]
             inc = self._incident(iid)
             self._check(ap, inc, role, beneficiary_id, amount, currency)
+            # Deterministic idempotency key: (incident, attempt number). The same attempt always maps to
+            # the same request_id, so even a crash before this row commits can't mint a second transfer.
+            attempt = self.s.one("SELECT COUNT(*) n FROM payments WHERE incident_id=?", iid)["n"] + 1
+            request_id = str(uuid.uuid5(REQ_NS, f"{self._desk_id()}:incident:{iid}:attempt:{attempt}"))
             now = self.now()
             self.s.db.execute(
                 "INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,status_source,created_at,updated_at)"
@@ -255,10 +272,17 @@ class Service:
         self._apply_provider(request_id, t, "provider_get")
         return self.payment(request_id)
 
-    def on_webhook(self, payload):
+    def on_webhook(self, payload, event_id=None):
         """Webhooks are treated as a hint to look, never as the truth: we log the claim, then
         re-read the transfer from Airwallex. A forged, duplicated or out-of-order webhook therefore
         cannot change a payment's status by itself."""
+        event_id = event_id or payload.get("id")
+        if event_id:
+            try:
+                with self.s.tx():
+                    self.s.db.execute("INSERT INTO webhook_events VALUES(?,?)", (str(event_id)[:100], self.now()))
+            except sqlite3.IntegrityError:
+                return None  # same event delivered again (Airwallex retries for ~3 days) - already handled
         obj = (payload.get("data") or {}).get("object") or payload.get("data") or {}
         tid, rid = obj.get("id"), obj.get("request_id")
         row = self.s.one("SELECT request_id, incident_id FROM payments WHERE provider_id=? OR request_id=?", tid or "-", rid or "-")
@@ -348,6 +372,8 @@ class Service:
                 "untrusted": "supplier-provided text; never used as an instruction",
             },
             "environment": "Airwallex SANDBOX - no real money",
+            "log_integrity": dict(zip(("intact", "entries_checked", "first_bad_id"), self.s.verify_chain())),
+            "log_head": (self.s.one("SELECT hash FROM events ORDER BY id DESC LIMIT 1") or {"hash": None})["hash"],
         }
 
     def payment(self, request_id):
@@ -374,8 +400,13 @@ class Service:
             raise Refused("approval expired")
         if (ap["beneficiary_id"], ap["amount"], ap["currency"]) != (beneficiary_id, amount, currency):
             raise Refused("terms differ from what the operator approved (beneficiary, amount or currency)")
-        if not self.s.one("SELECT 1 FROM beneficiaries WHERE id=?", beneficiary_id):
+        ben = self.s.one("SELECT * FROM beneficiaries WHERE id=?", beneficiary_id)
+        if not ben:
             raise Refused("beneficiary is not on the allowlist")
+        if ap["payee_hash"] and ap["payee_hash"] != ben["details_hash"]:
+            raise Refused("the payee's verified bank details changed after this approval was given - approve again")
+        if ben["details_changed_at"] and self.now() - ben["details_changed_at"] < pol["changed_payee_window"] and amount > pol["changed_payee_cap"]:
+            raise Refused(f"this payee's bank details changed recently - payments are capped at {pol['changed_payee_cap']/100:.2f} for {pol['changed_payee_window']//3600}h (send a small test payment first)")
         if currency != pol["currency"]:
             raise Refused("currency not allowed")
         if amount > pol["per_tx_cap"]:
@@ -466,7 +497,32 @@ class Service:
             self.s.db.execute("UPDATE incidents SET alert=?, state=CASE WHEN state='RESOLVED' THEN 'RESOLVED' ELSE 'ESCALATED' END WHERE id=?", (code, incident_id))
         self.s.log("policy", "incident_alert", "decided", incident_id, code=code)
 
-    def sweep(self, stale_after=600, sla=72 * 3600):
+    def scan_orphans(self, since=None):
+        """Any transfer on the Airwallex account that this desk did not create is a red flag (leaked key,
+        someone paying from the dashboard, a second system). Raise a desk-wide alarm and STOP."""
+        since = since or float(self._meta("orphan_scan_since") or self.now())
+        try:
+            items = self.p.list_transfers_since(since)
+        except (Ambiguous, ProviderError):
+            return []
+        ours = {r["request_id"] for r in self.s.q("SELECT request_id FROM payments")}
+        seen = set(json.loads(self._meta("orphans_seen") or "[]"))
+        new = [t for t in items if t.get("request_id") not in ours and t.get("id") not in seen]
+        for t in new:
+            self.s.log("provider", "orphan_transfer", "observed", None, transfer_id=t.get("id"), request_id=t.get("request_id"),
+                       amount=t.get("transfer_amount"), currency=t.get("transfer_currency"), status=t.get("status"), created_at=t.get("created_at"))
+        if new:
+            self._meta("orphans_seen", json.dumps(sorted(seen | {t.get("id") for t in new})))
+            self.kill("system", f"{len(new)} transfer(s) on the Airwallex account did not come from this desk")
+        return new
+
+    def _meta(self, k, v=None):
+        if v is None:
+            r = self.s.one("SELECT v FROM meta WHERE k=?", k)
+            return r["v"] if r else None
+        self.s.db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
+
+    def sweep(self, stale_after=600, sla=72 * 3600, paid_watch=5 * 86400):
         """Background safety net: re-read anything uncertain or in flight that hasn't been checked
         lately, and raise an alert when a transfer sits in flight past the SLA."""
         out = []
@@ -478,6 +534,10 @@ class Service:
                 if inc["alert"] != "OVERDUE_SLA":
                     self.s.log("policy", "sla_breached", "decided", p["incident_id"], request_id=p["request_id"], hours=int((self.now() - p["created_at"]) / 3600))
                     self._alert(p["incident_id"], "OVERDUE_SLA")
+        # PAID is provisional: Airwallex can still move it to FAILED. Keep re-reading for a few days.
+        for p in self.s.q("SELECT * FROM payments WHERE status='PAID' AND created_at>?", self.now() - paid_watch):
+            if self.now() - p["updated_at"] >= 3600:
+                out.append(self.reconcile(p["request_id"]))
         return out
 
 

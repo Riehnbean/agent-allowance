@@ -25,6 +25,7 @@ async function load() {
   const p = S.policy;
   $("#budget").textContent = `Today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} committed · max ${usd(p.per_tx_cap)} per payment`;
   $("#agentname").textContent = "Agent: " + S.agent;
+  $("#agentname").textContent += p.log ? (p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`) : "";
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
   const k = $("#kill"); k.textContent = p.killed ? "STOPPED - tap to resume" : "STOP all payments"; k.dataset.on = p.killed ? "1" : "";
   const list = $("#list"); list.replaceChildren();
