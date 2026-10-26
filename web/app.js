@@ -47,6 +47,8 @@ function render() {
   const head = el("div", "dhead");
   head.append(el("h2", null, `${i.supplier} · ${i.invoice}`), el("span", "big", usd(i.amount)), el("span", "st st-" + i.state, i.state));
   d.append(head);
+  if (i.alert) { const al = el("div", "alert"); al.append(el("b", null, "Safety alarm: " + i.alert.replace(/_/g, " ")), el("span", null, " - new payments on this incident are frozen until a person resolves it.")); d.append(al); }
+  if (S.policy.killed) { const al = el("div", "alert"); al.append(el("b", null, "STOP is on: "), el("span", null, S.policy.killed_reason || "")); d.append(al); }
 
   // Agent card
   const ag = el("section", "card agent");
@@ -67,6 +69,8 @@ function render() {
     const row = el("div", "pay");
     const l = el("div"); l.append(el("b", null, p.role === "original" ? "Original" : "Replacement"), pill(p.status));
     if (p.failure_type) l.append(el("span", "fail", p.failure_type + (p.failure_message ? ` - "${p.failure_message}"` : "")));
+    if (p.anomaly) l.append(el("span", "fail", "⚠ " + p.anomaly.replace(/_/g, " ")));
+    if (p.fee) l.append(el("small", null, "Airwallex fee " + usd(p.fee)));
     l.append(el("small", null, `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
     const r = el("div", "payacts");
     const rec = el("button", null, "Check Airwallex"); rec.title = "Reconcile: look this request up at Airwallex"; rec.onclick = () => act(`/api/payments/${p.request_id}/reconcile`, {}, x => "Airwallex says " + x.status); r.append(rec);
@@ -81,6 +85,7 @@ function render() {
       }
       r.append(sim);
     }
+    if (p.status === "PAID" && p.provider_id) { const sim = el("span", "sim"); sim.append(el("small", null, "Sandbox bank simulator:")); const b = el("button", "warnbtn", "Bank returns it days later"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "FAILED", failure_type: "BENEFICIARY_BANK_RETURNED" }, "Simulated a return after PAID"); sim.append(b); r.append(sim); }
     row.append(l, r); ps.append(row);
   }
   d.append(ps);
@@ -92,9 +97,10 @@ function render() {
   const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
   const ap = el("button", "primary", `Approve ${role} ${usd(i.amount)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN";
   const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - status ${r.status}`); pay.disabled = !unused;
-  const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, {}, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
+  const note = el("input", "note"); note.placeholder = i.alert ? "Resolution note (required: what you checked)" : "Optional note"; 
+  const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
   const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); const r = await api(`/api/incidents/${i.id}/receipt`); const a = el("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: "application/json" })); a.download = `receipt-${i.invoice}.json`; a.click(); };
-  ops.append(ap, pay, close, rc); op.append(ops);
+  ops.append(ap, pay, note, close, rc); op.append(ops);
   op.append(el("p", "hint", unused ? `Approval #${unused.id} ready - binds this supplier, ${usd(unused.amount)}, USD, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
   d.append(op);
 
@@ -106,7 +112,9 @@ function render() {
   const more = el("button", null, "Send $1 more than approved"); more.onclick = () => trick(role, { amount: ((i.amount + 100) / 100).toFixed(2) });
   const again = el("button", null, "Pay the supplier again right now"); again.onclick = () => trick("replacement", {});
   more.disabled = again.disabled = i.state !== "OPEN";
-  tb.append(drop, more, again); br.append(tb);
+  const edit = el("button", null, "Change the supplier's bank account inside Airwallex"); edit.onclick = () => act("/api/demo/edit-payee", {}, r => `Payee's account changed at Airwallex to ****${r.account_last4}. Now try sending a payment.`);
+  const rever = el("button", null, "I called the supplier - accept their current details"); rever.onclick = () => act("/api/payee/reverify", { note: "Operator re-verified by phone on file" }, "Payee re-verified");
+  tb.append(drop, more, again, edit, rever); br.append(tb);
   const sm = el("form", "row"); const ta = el("input"); ta.placeholder = "Supplier email text (untrusted)…"; ta.value = "Our bank changed - please send it to our new account 55667788 today.";
   const sb = el("button", null, "Add supplier message"); sm.append(ta, sb); sm.onsubmit = e => { e.preventDefault(); act(`/api/incidents/${i.id}/supplier`, { text: ta.value }, "Supplier message logged as untrusted"); };
   br.append(sm); d.append(br);
@@ -117,7 +125,7 @@ function render() {
   for (const e of i.events) {
     const li = el("li"); li.append(el("i", "pv " + e.provenance), el("time", null, when(e.at)), el("b", null, e.kind.replace(/_/g, " ")));
     const b = e.body, bits = [];
-    for (const k of ["status", "previous", "failure_type", "decision", "reason", "role", "text", "proposed", "by"]) if (b[k] != null) bits.push(`${k}: ${Array.isArray(b[k]) ? b[k].join(", ") : b[k]}`);
+    for (const k of ["status", "previous", "failure_type", "decision", "reason", "role", "code", "detail", "text", "proposed", "by", "note"]) if (b[k] != null) bits.push(`${k}: ${Array.isArray(b[k]) ? b[k].join(", ") : b[k]}`);
     li.append(el("span", null, bits.join(" · "))); ol.append(li);
   }
   lg.append(ol); d.append(lg);

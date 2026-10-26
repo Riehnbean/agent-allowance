@@ -61,7 +61,7 @@ def state():
     s = SVC.s
     incs = []
     for i in s.q("SELECT * FROM incidents ORDER BY id DESC LIMIT 20"):
-        pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
+        pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,fee,anomaly,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
         aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
         last = s.one("SELECT body,at,provenance FROM events WHERE incident_id=? AND kind='decision' ORDER BY id DESC LIMIT 1", i["id"])
         ev = [dict(e, body=json.loads(e["body"])) for e in s.q("SELECT at,actor,kind,provenance,body FROM events WHERE incident_id=? ORDER BY id DESC LIMIT 30", i["id"])]
@@ -112,6 +112,24 @@ def handle(method, path, body):
     if path == "/api/unkill":
         SVC.unkill("operator")
         return {}
+    if path == "/api/demo/edit-payee":
+        # Demo of an attacker / insider editing the payee inside Airwallex after it was approved.
+        ben = ensure_beneficiary()
+        cur = API.get_beneficiary(ben)
+        bd = cur["beneficiary"]["bank_details"]
+        bd["account_number"] = "000111222333" if bd.get("account_number") != "000111222333" else "123456789"
+        bd.pop("bank_name", None)
+        API.update_beneficiary(ben, {"beneficiary": cur["beneficiary"], "nickname": cur.get("nickname"), "transfer_methods": cur.get("transfer_methods", ["LOCAL"])})
+        SVC.s.log("system", "demo_payee_edited_at_airwallex", "operator", None, beneficiary_id=ben, new_account_last4=bd["account_number"][-4:])
+        return {"account_last4": bd["account_number"][-4:]}
+    if path == "/api/payee/reverify":
+        # Operator confirms the CURRENT bank details (after calling the supplier on a known number).
+        ben = ensure_beneficiary()
+        cur = API.get_beneficiary(ben)
+        bd = cur["beneficiary"]["bank_details"]
+        SVC.allow_beneficiary(ben, "Maple Lumber Supply LLC", f"acct ****{bd['account_number'][-4:]} · ABA {bd.get('account_routing_value1')}", "operator",
+                              details=cur, override_reason=body.get("note") or "re-verified by phone")
+        return {}
     if path == "/api/drop-next":
         PROV.armed = True
         return {}
@@ -136,7 +154,7 @@ def handle(method, path, body):
             SVC.supplier_message(iid, body.get("text", ""))
             return {}
         if act == "close":
-            SVC.close(iid, "operator")
+            SVC.close(iid, "operator", note=body.get("note"))
             return {}
     if len(p) >= 4 and p[1] == "payments":
         rid, act = p[2], p[3]
@@ -206,7 +224,21 @@ class H(BaseHTTPRequestHandler):
         self._route("POST")
 
 
+def sweeper():
+    import threading
+
+    def loop():
+        while True:
+            time.sleep(60)
+            try:
+                SVC.sweep(stale_after=300)
+            except Exception as e:  # never let the safety net crash the desk
+                print("sweep error:", e)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 if __name__ == "__main__":
+    sweeper()
     if not TOKEN:
         sys.exit("Set OPERATOR_TOKEN to a secret of your choice first.")
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
