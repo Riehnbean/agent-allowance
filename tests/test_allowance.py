@@ -463,6 +463,29 @@ class Holes(Base):
         self.assertEqual(self.svc.pay(ap2, "replacement", BEN, 25_000, "USD")["status"], "SCHEDULED")
 
 
+class FailClosed(Base):
+    def test_unknown_provider_status_counts_as_in_flight(self):
+        iid = self.incident()
+        p = self.pay_original(iid)
+        self.fake.by_id[p["provider_id"]]["status"] = "IN_APPROVAL"  # a status this code never planned for
+        self.svc.reconcile(p["request_id"])
+        self.assertNotIn("REPLACE", self.svc.allowed_actions(iid))
+        ap = self.svc.approve(iid, "replacement", "zach")
+        with self.assertRaisesRegex(Refused, "duplicate lock"):
+            self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
+        self.assertEqual(self.svc.s.committed_today(self.t), 25_000)
+        self.assertEqual(run(self.svc, iid, RulesAgent())["decision"], "WAIT")
+
+    def test_database_index_blocks_second_live_payment_even_if_code_is_bypassed(self):
+        import sqlite3
+        iid = self.incident()
+        p = self.pay_original(iid)
+        ap = self.svc.approve(iid, "replacement", "zach")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "incident_id"):
+            self.svc.s.db.execute("INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,created_at,updated_at)"
+                                  " VALUES('x',?,'replacement',?,?,1,'USD','RESERVED',0,0)", (iid, ap, BEN))
+
+
 class Limits(Base):
     def test_per_supplier_cap(self):
         self.svc.s.db.execute("UPDATE policy SET per_supplier_daily_cap=40000")

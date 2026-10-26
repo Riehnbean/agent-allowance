@@ -14,7 +14,9 @@ import time
 import uuid
 
 from .adapter import Ambiguous, ProviderError, account_key, details_hash, str_to_minor
-from .store import IN_FLIGHT, LIVE
+import sqlite3
+
+from .store import IN_FLIGHT, in_flight
 
 # Failure types where paying the SAME beneficiary again is reasonable.
 RETRYABLE = {
@@ -31,7 +33,7 @@ DETAILS_PROBLEM = {
 # Someone deliberately stopped or reversed it -> never auto-replace.
 DELIBERATE = {"RECALL_REQUESTED", "CLIENT_REQUESTED", "BENEFICIARY_REQUESTED", "DUPLICATION_RETURN", "TM_SUSPENDED"}
 
-FINAL = ("PAID", "CANCELLED")
+from .store import FINAL  # noqa: E402
 
 
 class Refused(Exception):
@@ -111,7 +113,7 @@ class Service:
         inc = self._incident(incident_id)
         if inc["state"] == "RESOLVED":
             raise Refused("incident is already resolved")
-        if any(p["status"] in IN_FLIGHT for p in self.s.q("SELECT status FROM payments WHERE incident_id=?", incident_id)):
+        if any(in_flight(p["status"]) for p in self.s.q("SELECT status FROM payments WHERE incident_id=?", incident_id)):
             raise Refused("a payment on this incident may still go through - wait for a final status first")
         with self.s.tx():
             self.s.db.execute("UPDATE incidents SET state='OPEN', alert=NULL, reopened_at=? WHERE id=?", (self.now(), incident_id))
@@ -145,7 +147,10 @@ class Service:
         """Reserve + submit one payment under an approval. Terms must match the approval exactly."""
         request_id = str(uuid.uuid4())
         try:
-            return self._pay(request_id, approval_id, role, beneficiary_id, amount, currency)
+            try:
+                return self._pay(request_id, approval_id, role, beneficiary_id, amount, currency)
+            except sqlite3.IntegrityError as e:
+                raise Refused(f"database duplicate lock: {e}") from None
         except Refused as e:
             ap = self.s.one("SELECT incident_id FROM approvals WHERE id=?", approval_id)
             # logged after the rollback, so the refusal itself is always on the record
@@ -287,7 +292,7 @@ class Service:
         """Code decides which actions are even possible; the agent picks among these."""
         ev = self.evidence(incident_id)
         pays = ev["payments"]
-        live = [p for p in pays if p["status"] in IN_FLIGHT]
+        live = [p for p in pays if in_flight(p["status"])]
         paid = [p for p in pays if p["status"] == "PAID"]
         acts = {"ESCALATE"}
         if live:
@@ -387,7 +392,7 @@ class Service:
         if inc["alert"]:
             raise Refused(f"incident has an open alert ({inc['alert']}); a person must resolve it first")
         pays = self.s.q("SELECT * FROM payments WHERE incident_id=?", inc["id"])
-        if any(p["status"] in IN_FLIGHT for p in pays):
+        if any(in_flight(p["status"]) for p in pays):
             raise Refused("duplicate lock: another payment on this incident may still go through")
         if any(p["status"] == "PAID" for p in pays):
             raise Refused("this incident already has a paid transfer")
@@ -465,10 +470,10 @@ class Service:
         """Background safety net: re-read anything uncertain or in flight that hasn't been checked
         lately, and raise an alert when a transfer sits in flight past the SLA."""
         out = []
-        for p in self.s.q(f"SELECT * FROM payments WHERE status IN ({','.join('?'*len(IN_FLIGHT))})", *IN_FLIGHT):
+        for p in self.s.q("SELECT * FROM payments WHERE status NOT IN ('PAID','CANCELLED')"):
             if self.now() - p["updated_at"] >= stale_after:
                 out.append(self.reconcile(p["request_id"]))
-            if self.now() - p["created_at"] > sla and p["status"] in IN_FLIGHT:
+            if self.now() - p["created_at"] > sla and in_flight(self.payment(p["request_id"])["status"]):
                 inc = self._incident(p["incident_id"])
                 if inc["alert"] != "OVERDUE_SLA":
                     self.s.log("policy", "sla_breached", "decided", p["incident_id"], request_id=p["request_id"], hours=int((self.now() - p["created_at"]) / 3600))

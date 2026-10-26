@@ -62,7 +62,7 @@ class RulesAgent:
             return ("WAIT" if "WAIT" in allowed else "ESCALATE"), [
                 "We sent the transfer but never got a clear answer back. Paying again now could pay twice.",
                 "Keep the money reserved and reconcile with the same request ID."]
-        if st in ("SCHEDULED", "PROCESSING", "SENT", "OVERDUE", "RESERVED"):
+        if st not in ("PAID", "CANCELLED"):  # any non-final status, including ones we've never seen
             r = [f"Airwallex says the original is still {st}. It can still arrive, so a second payment now risks paying twice."]
             if past_deadline:
                 r.append("The supplier's deadline has passed, so a person should contact them - but we still must not pay again until this one is final.")

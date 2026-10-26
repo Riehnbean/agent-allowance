@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS payments(
   updated_at REAL NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_approval_use ON payments(approval_id);
+-- Database-level duplicate lock: at most ONE not-final payment per incident, whatever the code above does.
+CREATE UNIQUE INDEX IF NOT EXISTS one_live_payment_per_incident ON payments(incident_id) WHERE status NOT IN ('PAID','CANCELLED');
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at REAL NOT NULL,
@@ -87,8 +89,21 @@ CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events BEGIN SELE
 """
 
 # Statuses where money may still leave the account (or already has).
-LIVE = ("RESERVED", "UNKNOWN", "SCHEDULED", "PROCESSING", "SENT", "OVERDUE", "PAID")
-IN_FLIGHT = ("RESERVED", "UNKNOWN", "SCHEDULED", "PROCESSING", "SENT", "OVERDUE")
+# Fail closed: ANY status other than the two final ones counts as "might still pay" - including
+# statuses we have never seen (CREATED, IN_APPROVAL, FAILED-before-auto-cancel, new enums...).
+FINAL = ("PAID", "CANCELLED")
+
+
+def in_flight(status):
+    return status not in FINAL
+
+
+def counts_against_budget(status):
+    return status != "CANCELLED"
+
+
+# kept for readability in messages/tests
+IN_FLIGHT = ("RESERVED", "UNKNOWN", "CREATED", "SCHEDULED", "OVERDUE", "PROCESSING", "SENT", "FAILED")
 
 
 class Store:
@@ -129,9 +144,9 @@ class Store:
         now = now or time.time()
         day0 = now - (now % 86400)
         r = self.one(
-            f"SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE beneficiary_id=? AND status IN ({','.join('?'*len(LIVE))})"
-            f" AND (created_at>=? OR status IN ({','.join('?'*len(IN_FLIGHT))}))",
-            beneficiary_id, *LIVE, day0, *IN_FLIGHT,
+            "SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE beneficiary_id=? AND status<>'CANCELLED'"
+            " AND (created_at>=? OR status NOT IN ('PAID','CANCELLED'))",
+            beneficiary_id, day0,
         )
         return r["s"]
 
@@ -144,9 +159,9 @@ class Store:
         now = now or time.time()
         day0 = now - (now % 86400)
         r = self.one(
-            f"SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE status IN ({','.join('?'*len(LIVE))})"
-            f" AND (created_at>=? OR status IN ({','.join('?'*len(IN_FLIGHT))}))",
-            *LIVE, day0, *IN_FLIGHT,
+            "SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE status<>'CANCELLED'"
+            " AND (created_at>=? OR status NOT IN ('PAID','CANCELLED'))",
+            day0,
         )
         return r["s"]
 
