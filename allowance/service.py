@@ -87,17 +87,23 @@ class Service:
     def pay(self, approval_id, role, beneficiary_id, amount, currency):
         """Reserve + submit one payment under an approval. Terms must match the approval exactly."""
         request_id = str(uuid.uuid4())
+        try:
+            return self._pay(request_id, approval_id, role, beneficiary_id, amount, currency)
+        except Refused as e:
+            ap = self.s.one("SELECT incident_id FROM approvals WHERE id=?", approval_id)
+            # logged after the rollback, so the refusal itself is always on the record
+            self.s.log("policy", "payment_refused", "decided", ap["incident_id"] if ap else None,
+                       role=role, reason=str(e), amount=amount, beneficiary_id=beneficiary_id)
+            raise
+
+    def _pay(self, request_id, approval_id, role, beneficiary_id, amount, currency):
         with self.s.tx():
             ap = self.s.one("SELECT * FROM approvals WHERE id=?", approval_id)
             if not ap:
                 raise Refused("no such approval")
             iid = ap["incident_id"]
             inc = self._incident(iid)
-            try:
-                self._check(ap, inc, role, beneficiary_id, amount, currency)
-            except Refused as e:
-                self.s.log("policy", "payment_refused", "decided", iid, role=role, reason=str(e), amount=amount, beneficiary_id=beneficiary_id)
-                raise
+            self._check(ap, inc, role, beneficiary_id, amount, currency)
             now = self.now()
             self.s.db.execute(
                 "INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,status_source,created_at,updated_at)"

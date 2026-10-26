@@ -95,6 +95,7 @@ class ClaudeAgent:
         self.fallback, self.timeout = fallback or RulesAgent(), timeout
 
     def decide(self, ev, allowed):
+        self.used_llm = False
         if not self.key:
             d, r = self.fallback.decide(ev, allowed)
             return d, r + ["(LLM not configured - deterministic rules agent answered.)"]
@@ -113,6 +114,7 @@ class ClaudeAgent:
         except Exception as e:  # network, parse, refusal -> safe fallback
             d, r = self.fallback.decide(ev, allowed)
             return d, r + [f"(LLM unavailable: {type(e).__name__}; rules agent answered.)"]
+        self.used_llm = True
         # Belt and braces: an LLM pick that code doesn't allow is downgraded, never executed.
         if d not in allowed:
             return "ESCALATE", reasons + [f"(Model proposed {d}, which code does not allow here; escalating instead.)"]
@@ -126,5 +128,6 @@ def run(service, incident_id, agent):
     allowed = service.allowed_actions(incident_id)
     t0 = time.time()
     decision, reasons = agent.decide(ev, allowed)
-    service.record_decision(incident_id, decision, reasons, "model" if agent.name == "claude" else "decided")
-    return {"decision": decision, "reasons": reasons, "allowed": allowed, "agent": agent.name, "ms": int((time.time() - t0) * 1000)}
+    used_llm = getattr(agent, "used_llm", False)
+    service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided")
+    return {"decision": decision, "reasons": reasons, "allowed": allowed, "agent": "llm" if used_llm else "rules", "ms": int((time.time() - t0) * 1000)}

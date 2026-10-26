@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Allowance · Payment Incident Desk</title><link rel="stylesheet" href="/app.css"><script defer src="/app.js"></script></head>
+<body>
+<header class="top">
+  <div class="brand"><b>Agent Allowance</b><span>Payment Incident Desk</span></div>
+  <span class="env" id="env">Airwallex SANDBOX · fake money</span>
+  <div class="budget" id="budget"></div>
+  <span class="agentname" id="agentname"></span>
+  <button id="kill" class="kill">STOP all payments</button>
+</header>
+<div id="gate" class="gate" hidden>
+  <form id="gateform"><h2>Operator sign-in</h2><p>Enter the operator token this desk was started with. The AI agent never has it.</p>
+  <input id="tok" type="password" autocomplete="current-password" placeholder="Operator token"><button>Open desk</button></form>
+</div>
+<main class="grid">
+  <aside class="side">
+    <section class="card">
+      <h3>New supplier payment</h3>
+      <form id="newinc" class="row">
+        <label>Invoice <input name="invoice" placeholder="INV-1042"></label>
+        <label>Amount (USD) <input name="amount" value="250.00" inputmode="decimal"></label>
+        <button>Open incident</button>
+      </form>
+      <p class="hint">Pays the one supplier on the allowlist: <b id="benname">—</b></p>
+    </section>
+    <section class="card"><h3>Incidents</h3><ol id="list" class="list"></ol></section>
+    <section class="card legend"><h3>How to read the log</h3>
+      <p><i class="pv observed"></i>Observed - read back from Airwallex</p>
+      <p><i class="pv decided"></i>Decided - enforced by code</p>
+      <p><i class="pv model"></i>Model - the AI's opinion</p>
+      <p><i class="pv operator"></i>Operator - a person did it</p>
+      <p><i class="pv untrusted"></i>Untrusted - supplier text, never obeyed</p>
+    </section>
+  </aside>
+  <section id="detail" class="detail"><p class="empty">Open an incident to start.</p></section>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body></html>

@@ -146,6 +146,14 @@ class Approvals(Base):
         with self.assertRaisesRegex(Refused, "terms differ"):
             self.svc.pay(ap, "original", "ben-attacker", 25_000, "USD")
 
+    def test_refusals_are_logged(self):
+        iid = self.incident()
+        ap = self.svc.approve(iid, "original", "zach")
+        with self.assertRaises(Refused):
+            self.svc.pay(ap, "original", BEN, 99_999, "USD")
+        kinds = [e["kind"] for e in self.svc.s.q("SELECT kind FROM events WHERE incident_id=?", iid)]
+        self.assertIn("payment_refused", kinds)
+
     def test_expired_approval_refused(self):
         iid = self.incident()
         ap = self.svc.approve(iid, "original", "zach", ttl=60)
