@@ -134,6 +134,10 @@ PROVIDERS = {
 }
 
 
+NICE = {"openai-fast": "GPT-OSS 20B (open-source, free)", "openai/gpt-oss-20b": "GPT-OSS 20B (open-source)",
+        "qwen2.5-3b-instruct": "Qwen 2.5 3B (open-source, on this machine)", "qwen2.5:3b": "Qwen 2.5 3B (open-source, Ollama)"}
+
+
 def digest(ev, allowed):
     """A compact, credential-free view of the evidence, with plain yes/no facts computed by code.
     Small models read short prompts faster and misread fewer raw fields."""
@@ -177,6 +181,10 @@ class Brain:
     @property
     def label(self):
         return f"{self.model} via {self.provider or 'custom'}"
+
+    @property
+    def nice(self):
+        return NICE.get(self.model, self.model)
 
     def _post(self, url, body, headers):
         req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={"content-type": "application/json", **headers})
@@ -241,6 +249,12 @@ class LLMAgent:
     @property
     def label(self):
         return " → ".join(b.label for b in self.brains) + " → rulebook" if self.brains else "rules (no AI model set)"
+
+    @property
+    def nice(self):
+        if not self.brains:
+            return "Rulebook only (no AI model set)"
+        return "AI: " + self.brains[0].nice + "".join(" · backup: " + b.nice for b in self.brains[1:]) + " · then rulebook"
 
     def _key(self, user):
         return hashlib.sha256((SYSTEM_PROMPT + "|" + "|".join(b.label for b in self.brains) + "|" + user).encode()).hexdigest()
@@ -381,6 +395,8 @@ def run(service, incident_id, agent):
     t0 = time.time()
     decision, reasons = agent.decide(ev, allowed)
     used_llm = getattr(agent, "used_llm", False)
-    service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided", evidence=ev)
+    who = getattr(agent, "answered_by", None) if used_llm else None
+    service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided", evidence=ev,
+                            answered_by=(NICE.get((who or "").split(" via ")[0]) or who) if used_llm else "Rulebook (code)")
     return {"decision": decision, "reasons": reasons, "allowed": allowed, "agent": "llm" if used_llm else "rules",
-            "model": getattr(agent, "answered_by", None), "prepared": getattr(agent, "prepared", False), "ms": int((time.time() - t0) * 1000)}
+            "model": getattr(agent, "answered_by", None), "model_nice": NICE.get((getattr(agent, "answered_by", None) or "").split(" via ")[0]), "prepared": getattr(agent, "prepared", False), "ms": int((time.time() - t0) * 1000)}

@@ -24,7 +24,7 @@ async function load() {
   $("#gate").hidden = true;
   const p = S.policy;
   $("#budget").textContent = `Today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} committed · max ${usd(p.per_tx_cap)} per payment`;
-  $("#agentname").textContent = "Agent: " + S.agent;
+  $("#agentname").textContent = S.agent;
   $("#agentname").textContent += p.log ? (p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`) : "";
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
   const pend = $("#pending"); pend.replaceChildren();
@@ -66,13 +66,13 @@ function render() {
   if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
   const ask = el("button", "primary", "Ask the agent");
   ask.onclick = async () => { ask.disabled = true; ask.textContent = "Agent thinking…";
-    await act(`/api/incidents/${i.id}/agent`, {}, r => `Agent: ${r.decision} · ${r.agent === "llm" ? r.model : "rulebook"} · ${(r.ms / 1000).toFixed(1)}s`); };
+    await act(`/api/incidents/${i.id}/agent`, {}, r => `Agent: ${r.decision} · ${r.agent === "llm" ? (r.model_nice || r.model) : "rulebook"} · ${(r.ms / 1000).toFixed(1)}s`); };
   top.append(ask);
   ag.append(top);
   if (i.decision) {
     ag.append(el("div", "decision d-" + i.decision.decision, i.decision.decision));
     const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", null, r)); ag.append(ul);
-    ag.append(el("p", "hint", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · provenance: ${i.decision.provenance}`));
+    ag.append(el("p", "hint", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else ag.append(el("p", "hint", "The agent can only pick from: " + i.allowed.join(", ") + ". It cannot pay, approve or change who gets paid."));
   d.append(ag);
 

@@ -36,7 +36,7 @@ input,select{background:#0e1318;color:var(--ink);border:1px solid #334452;border
 .empty{color:var(--mute);padding:30px}
 .gate{position:fixed;inset:0;background:#0b1014ee;display:flex;align-items:center;justify-content:center;z-index:20}.gate form{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px;max-width:380px;display:grid;gap:10px}.gate h2{margin:0}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(30px);opacity:0;background:#20303c;border:1px solid #3d5466;border-radius:9px;padding:10px 16px;transition:.2s;max-width:90vw;z-index:30}.toast.on{opacity:1;transform:translateX(-50%)}.toast[data-bad="1"]{background:#3a1718;border-color:#7a2a2b}
-.gate[hidden]{display:none}
+[hidden]{display:none!important}
 .pay>div:first-child>div,.pay .pill{align-self:flex-start}
 .pay>div:first-child{align-items:flex-start}
 

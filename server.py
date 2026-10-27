@@ -92,7 +92,7 @@ def state():
     return {"me": None, "operators": sorted(set(OPERATORS.values())),
             "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
             "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
-            "agent": AGENT.label, "drop_armed": PROV.armed,
+            "agent": AGENT.nice, "drop_armed": PROV.armed,
             "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only"}
 
 

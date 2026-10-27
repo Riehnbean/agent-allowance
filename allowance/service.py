@@ -410,7 +410,7 @@ class Service:
             # Sticky: later "any update?" messages can't push it out of view.
             self._alert(incident_id, "FRAUD_SIGNAL")
 
-    def record_decision(self, incident_id, decision, reasons, source, evidence=None):
+    def record_decision(self, incident_id, decision, reasons, source, evidence=None, answered_by=None):
         if self._incident(incident_id)["state"] == "RESOLVED":
             raise Refused("incident is resolved; the agent has nothing to decide")
         allowed = self.allowed_actions(incident_id)
@@ -420,7 +420,7 @@ class Service:
         import hashlib
         ev_hash = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()[:16] if evidence else None
         self.s.log("agent", "decision", source, incident_id, decision=decision, reasons=reasons, allowed=allowed, evidence_hash=ev_hash,
-                   evidence=evidence)
+                   evidence=evidence, answered_by=answered_by)
         if decision == "ESCALATE":
             with self.s.tx():
                 self.s.db.execute("UPDATE incidents SET state='ESCALATED' WHERE id=? AND state='OPEN'", (incident_id,))
