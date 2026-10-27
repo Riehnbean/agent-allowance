@@ -62,7 +62,12 @@ function render() {
   // Agent card
   const ag = el("section", "card agent");
   const top = el("div", "agtop"); top.append(el("h3", null, "Agent's call"));
-  const ask = el("button", "primary", "Ask the agent"); ask.onclick = () => act(`/api/incidents/${i.id}/agent`, {}, r => "Agent: " + r.decision); top.append(ask);
+  const aiTag = { ready: ["ai-ready", "AI answer ready ✓"], thinking: ["ai-think", "AI is reading the evidence…"], idle: ["ai-think", "AI queued…"] }[i.ai];
+  if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
+  const ask = el("button", "primary", "Ask the agent");
+  ask.onclick = async () => { ask.disabled = true; ask.textContent = "Agent thinking…";
+    await act(`/api/incidents/${i.id}/agent`, {}, r => `Agent: ${r.decision} · ${r.agent === "llm" ? r.model : "rulebook"} · ${(r.ms / 1000).toFixed(1)}s`); };
+  top.append(ask);
   ag.append(top);
   if (i.decision) {
     ag.append(el("div", "decision d-" + i.decision.decision, i.decision.decision));
@@ -162,4 +167,4 @@ $("#kill").onclick = () => {
 $("#resumeform").onsubmit = e => { e.preventDefault(); act("/api/unkill", { note: $("#resumenote").value }, r => r.pending ? `Resume request #${r.pending} needs a second person` : "Payments resumed"); $("#resume").hidden = true; };
 $("#gateform").onsubmit = e => { e.preventDefault(); token = $("#tok").value; try { sessionStorage.setItem("op-token", token); } catch {} load().catch(err => toast(err.message, true)); };
 load().catch(() => { $("#gate").hidden = false; });
-setInterval(() => { if (!document.hidden && token) load().catch(() => {}); }, 8000);
+setInterval(() => { if (!document.hidden && token && !document.querySelector("input:focus,textarea:focus")) load().catch(() => {}); }, 3000);

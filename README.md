@@ -42,10 +42,13 @@ export OPERATOR_TOKEN=choose-a-secret
 #   pip install 'llama-cpp-python[server]'
 #   curl -L -o qwen.gguf https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf
 #   python3 -m llama_cpp.server --model qwen.gguf --model_alias qwen2.5-3b-instruct --port 8711 &
-export AGENT_PROVIDER=local        # or: ollama | groq (GROQ_API_KEY) | gemini (GEMINI_API_KEY) | anthropic
+export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (no signup), then the local model, then the rulebook
+#   other options: ollama | groq (GROQ_API_KEY) | gemini (GEMINI_API_KEY) | anthropic (ANTHROPIC_API_KEY)
+# Think-ahead: the desk asks the AI as soon as an incident changes, so the operator's click is instant;
+# a click never waits more than AGENT_CLICK_BUDGET (default 4s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
-python3 -m unittest -v tests.test_allowance        # 82 tests incl. an independent red-team suite, no network
+python3 -m unittest -v tests.test_allowance tests.test_break tests.test_break_server  # 87 tests incl. an independent red-team suite, no network
 python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
 AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)
 ```

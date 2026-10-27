@@ -8,6 +8,7 @@ that moves money - it can only be asked for a proposal.
 """
 import hmac
 import json
+import threading
 import os
 import re
 import sys
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from allowance.adapter import Airwallex, Ambiguous, ProviderError  # noqa: E402
-from allowance.agent import LLMAgent, run  # noqa: E402
+from allowance.agent import LLMAgent, run, think_ahead  # noqa: E402
 from allowance.service import ALL_FAILURE_TYPES, Refused, Service  # noqa: E402
 from allowance.store import Store  # noqa: E402
 
@@ -62,6 +63,7 @@ for _k, _env in (("per_tx_cap", "PER_TX_CAP"), ("daily_cap", "DAILY_CAP"), ("dua
     if os.environ.get(_env):  # env changes apply on restart (INSERT OR IGNORE alone would silently keep old caps)
         SVC.s.db.execute(f"UPDATE policy SET {_k}=? WHERE id=1", (int(os.environ[_env]),))
 AGENT = LLMAgent()
+WAKE = threading.Event()
 
 
 def cents(v):
@@ -79,7 +81,9 @@ def state():
         aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
         last = s.one("SELECT body,at,provenance FROM events WHERE incident_id=? AND kind='decision' ORDER BY id DESC LIMIT 1", i["id"])
         ev = [dict(e, body=json.loads(e["body"])) for e in s.q("SELECT at,actor,kind,provenance,body FROM events WHERE incident_id=? ORDER BY id DESC LIMIT 30", i["id"])]
-        incs.append({**dict(i), "payments": pays, "approvals": aps, "allowed": SVC.allowed_actions(i["id"]),
+        allowed = SVC.allowed_actions(i["id"])
+        ai = AGENT.status(SVC.evidence(i["id"]), allowed) if i["state"] != "RESOLVED" else "off"
+        incs.append({**dict(i), "payments": pays, "approvals": aps, "allowed": allowed, "ai": ai,
                      "decision": json.loads(last["body"]) | {"at": last["at"], "provenance": last["provenance"]} if last else None, "events": ev})
     pol = dict(s.policy())
     pol["committed_today"] = s.committed_today()
@@ -281,6 +285,8 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}") if n else {}
             out = handle(method, path, body, op)
+            if method == "POST":
+                WAKE.set()  # something changed: let the AI start thinking now
             if path == "/api/state":
                 out["me"] = op
             self._send(200, out)
@@ -319,6 +325,7 @@ if __name__ == "__main__":
     if not SVC._meta("orphan_scan_since"):
         SVC._meta("orphan_scan_since", str(time.time()))  # transfers made before the desk existed aren't orphans
     sweeper()
+    threading.Thread(target=think_ahead, args=(SVC, LLMAgent), kwargs={"wake": WAKE}, daemon=True).start()
     if not OPERATORS:
         sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
