@@ -38,10 +38,16 @@ Python 3.10+, standard library only.
 ```sh
 export AWX_CLIENT_ID=...  AWX_API_KEY=...        # sandbox scoped key
 export OPERATOR_TOKEN=choose-a-secret
-# optional: export ANTHROPIC_API_KEY=...  (LLM agent; otherwise the deterministic rules agent answers)
+# AI brain (free, open-source, runs on this machine - no account, no key, no data leaves the box):
+#   pip install 'llama-cpp-python[server]'
+#   curl -L -o qwen.gguf https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf
+#   python3 -m llama_cpp.server --model qwen.gguf --model_alias qwen2.5-3b-instruct --port 8711 &
+export AGENT_PROVIDER=local        # or: ollama | groq (GROQ_API_KEY) | gemini (GEMINI_API_KEY) | anthropic
+# With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
 python3 -m unittest -v tests.test_allowance        # 82 tests incl. an independent red-team suite, no network
-python3 scripts/sandbox_e2e.py                     # 3 scenarios against the live sandbox
+python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
+AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)
 ```
 
 ## Demo script (≈4 min)

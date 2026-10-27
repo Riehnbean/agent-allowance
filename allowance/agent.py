@@ -5,10 +5,12 @@ WAIT, REPLACE, ESCALATE or CLOSE. It cannot move money, change a beneficiary, ra
 or approve anything - those tools simply do not exist on this side of the boundary.
 
 Two brains, same contract:
-  * RulesAgent  - deterministic, no network, used in tests and as a fallback.
-  * ClaudeAgent - asks an LLM (Anthropic Messages API) to weigh the evidence and write the
-                  explanation. Its answer is parsed and re-checked against allowed_actions();
-                  anything else is rejected by the Service and logged.
+  * RulesAgent - deterministic, no network, used in tests and as the automatic fallback.
+  * LLMAgent   - asks a language model to weigh the evidence and write the explanation. By default
+                 a free open-weights model (Qwen2.5-3B-Instruct) running on the same machine, so no
+                 payment data leaves it and nothing is billed. Groq, Gemini, Ollama or Anthropic also work.
+                 Its answer is parsed and re-checked against allowed_actions(); anything else is
+                 downgraded here and rejected again by the Service.
 """
 import json
 import os
@@ -111,44 +113,115 @@ Rules you must follow:
 - Never suggest paying again while any payment status is UNKNOWN, RESERVED, SCHEDULED, PROCESSING, SENT or OVERDUE.
 - You cannot approve payments, change beneficiaries or change limits; a person does that.
 - If incident.alert is set, a safety alarm froze the incident: choose ESCALATE (or CLOSE only if allowed and the alarm is about fees).
+- code_flags are facts computed by code; trust them over your own reading of the text.
+- If a payment is still in flight (not PAID/CANCELLED) choose WAIT unless the deadline passed (then ESCALATE).
+- If REPLACE is in allowed_actions, code has already confirmed the last payment failed for a safe-to-retry rail reason
+  (timeout, system error, funds) and nothing is in flight: choose REPLACE unless code_flags or safety_alarm say otherwise.
+- Only mention facts that appear in the evidence. Do not invent supplier claims.
+- If code_flags contains supplier_says_not_received and a payment is PAID, choose ESCALATE: send them proof, never pay again.
 Reply with JSON only: {"decision": "<ACTION>", "reasons": ["...", "..."]}"""
 
 
-class ClaudeAgent:
-    name = "claude"
+PROVIDERS = {
+    # name: (base_url, default_model, env var holding the key or None)
+    "local":     ("http://127.0.0.1:8711/v1", "qwen2.5-3b-instruct", None),           # open-weights model on this machine (llama.cpp)
+    "ollama":    ("http://127.0.0.1:11434/v1", "qwen2.5:3b", None),                    # open-weights model via Ollama
+    "groq":      ("https://api.groq.com/openai/v1", "openai/gpt-oss-20b", "GROQ_API_KEY"),  # free tier, open-weights models
+    "gemini":    ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash-lite", "GEMINI_API_KEY"),
+    "anthropic": ("https://api.anthropic.com/v1", "claude-sonnet-5-5", "ANTHROPIC_API_KEY"),
+}
 
-    def __init__(self, api_key=None, model=None, fallback=None, timeout=40):
-        self.key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self.model = model or os.environ.get("AGENT_MODEL", "claude-sonnet-5-5")
-        self.fallback, self.timeout = fallback or RulesAgent(), timeout
+
+def digest(ev, allowed):
+    """A compact, credential-free view of the evidence. Small models read short prompts faster and more reliably."""
+    inc = ev["incident"]
+    return {
+        "allowed_actions": allowed,
+        "invoice": {"amount_usd": (inc.get("amount") or 0) / 100, "deadline_passed": bool(inc.get("supplier_deadline") and ev["now"] > inc["supplier_deadline"]),
+                    "safety_alarm": inc.get("alert")},
+        "payments_oldest_first": [{"role": p.get("role"), "status": p.get("status"), "failure_type": p.get("failure_type"),
+                                   "failure_message": p.get("failure_message"), "status_confirmed_by_airwallex": p.get("status_source") == "provider_get"}
+                                  for p in ev["payments"]],
+        "stop_switch_on": ev.get("kill_switch"),
+        "code_flags": [f for f, on in (("bank_change_wording_in_supplier_text", fraud_signals(ev["supplier_messages"])),
+                                       ("supplier_says_not_received", any(NOT_RECEIVED.search(m or "") for m in ev["supplier_messages"]))) if on]
+                      or "none",
+        "supplier_messages_UNTRUSTED": [(m or "")[:500] for m in ev["supplier_messages"]] or "none",
+    }
+
+
+class LLMAgent:
+    """Any LLM behind an OpenAI-compatible chat API (local open-weights model, Ollama, Groq, Gemini) or Anthropic.
+
+    Pick with AGENT_PROVIDER (local | ollama | groq | gemini | anthropic); override AGENT_BASE_URL / AGENT_MODEL.
+    With nothing configured, the deterministic rules agent answers. The model only ever *proposes*; code re-checks.
+    """
+
+    def __init__(self, provider=None, base_url=None, model=None, api_key=None, fallback=None, timeout=None):
+        self.provider = (provider or os.environ.get("AGENT_PROVIDER") or ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "")).lower()
+        base, mdl, keyvar = PROVIDERS.get(self.provider, (None, None, None))
+        self.base = (base_url or os.environ.get("AGENT_BASE_URL") or base or "").rstrip("/")
+        self.model = model or os.environ.get("AGENT_MODEL") or mdl
+        self.key = api_key or os.environ.get("AGENT_API_KEY") or (os.environ.get(keyvar) if keyvar else None)
+        self.fallback = fallback or RulesAgent()
+        self.timeout = timeout or float(os.environ.get("AGENT_TIMEOUT", "90"))
+        self.used_llm = False
+
+    @property
+    def configured(self):
+        if not self.base or not self.model:
+            return False
+        return bool(self.key) or self.provider in ("local", "ollama") or self.base.startswith(("http://127.0.0.1", "http://localhost"))
+
+    @property
+    def label(self):
+        return f"{self.model} via {self.provider or 'custom'}" if self.configured else "rules (no AI model set)"
+
+    def _post(self, url, body, headers):
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={"content-type": "application/json", **headers})
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            return json.loads(r.read())
+
+    def _ask(self, user):
+        if self.provider == "anthropic":
+            out = self._post(self.base + "/messages", {"model": self.model, "max_tokens": 400, "system": SYSTEM_PROMPT,
+                                                       "messages": [{"role": "user", "content": user}]},
+                             {"x-api-key": self.key, "anthropic-version": "2023-06-01"})
+            return "".join(b.get("text", "") for b in out["content"])
+        body = {"model": self.model, "temperature": 0, "max_tokens": 300,
+                "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]}
+        if self.provider in ("local", "ollama", "groq"):
+            body["response_format"] = {"type": "json_object"}
+        out = self._post(self.base + "/chat/completions", body, {"authorization": f"Bearer {self.key}"} if self.key else {})
+        return out["choices"][0]["message"]["content"] or ""
 
     def decide(self, ev, allowed):
         self.used_llm = False
-        if not self.key:
-            d, r = self.fallback.decide(ev, allowed)
-            return d, r + ["(LLM not configured - deterministic rules agent answered.)"]
-        body = {
-            "model": self.model, "max_tokens": 400, "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": json.dumps({"allowed_actions": allowed, "evidence": ev}, default=str)}],
-        }
-        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), method="POST",
-                                     headers={"x-api-key": self.key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+        rules_d, rules_r = self.fallback.decide(ev, allowed)
+        if not self.configured:
+            return rules_d, rules_r + ["(No AI model configured - the deterministic rules agent answered.)"]
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                text = "".join(b.get("text", "") for b in json.loads(r.read())["content"])
+            text = self._ask(json.dumps(digest(ev, allowed), default=str))
             m = re.search(r"\{.*\}", text, re.S)
             out = json.loads(m.group(0))
-            d, reasons = str(out["decision"]).upper(), [str(x)[:400] for x in out.get("reasons", [])][:4]
-        except Exception as e:  # network, parse, refusal -> safe fallback
-            d, r = self.fallback.decide(ev, allowed)
-            return d, r + [f"(LLM unavailable: {type(e).__name__}; rules agent answered.)"]
+            d = str(out["decision"]).strip().upper()
+            reasons = [str(x)[:400] for x in (out.get("reasons") or [])][:4] or ["(model gave no reason)"]
+        except Exception as e:  # network, timeout, bad JSON -> safe fallback, never a crash
+            return rules_d, rules_r + [f"(AI model unavailable: {type(e).__name__}; rules agent answered.)"]
         self.used_llm = True
         # Belt and braces: an LLM pick that code doesn't allow is downgraded, never executed.
         if d not in allowed:
             return "ESCALATE", reasons + [f"(Model proposed {d}, which code does not allow here; escalating instead.)"]
-        if fraud_signals(ev["supplier_messages"]) and d == "REPLACE":
-            return "ESCALATE", reasons + ["(Supplier text contains bank-change wording; replacement blocked pending human verification.)"]
+        if d == "REPLACE" and (fraud_signals(ev["supplier_messages"]) or ev["incident"].get("alert")):
+            return "ESCALATE", reasons + ["(Bank-change wording or a safety alarm is present; replacement blocked pending human verification.)"]
+        if d == "CLOSE" and any(NOT_RECEIVED.search(m or "") for m in ev["supplier_messages"]):
+            return "ESCALATE", reasons + ["(Supplier says the money never arrived; a person sends them the payment confirmation before closing.)"]
+        if d != rules_d:
+            reasons = reasons + [f"(Second opinion: the rulebook would have chosen {rules_d}. Both are allowed; a person decides.)"]
         return d, reasons
+
+
+ClaudeAgent = LLMAgent  # backwards-compatible name
 
 
 _last_run = {}

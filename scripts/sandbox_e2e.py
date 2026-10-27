@@ -17,7 +17,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from allowance.adapter import Airwallex, Ambiguous  # noqa: E402
-from allowance.agent import ClaudeAgent, run  # noqa: E402
+from allowance.agent import LLMAgent, run  # noqa: E402
 from allowance.service import Refused, Service  # noqa: E402
 from allowance.store import Store  # noqa: E402
 
@@ -59,7 +59,7 @@ def main(db=None):
     db = db or os.path.join(tempfile.mkdtemp(), "e2e.db")
     svc = Service(Store(db), prov)
     svc.s.init_policy("USD", per_tx_cap=100_000, daily_cap=300_000)
-    agent = ClaudeAgent()
+    agent = LLMAgent()
     ben = beneficiary(api)
     svc.allow_beneficiary(ben, "Maple Lumber Supply LLC", "****6789 / ABA 026009593", "zach")
     out = {}

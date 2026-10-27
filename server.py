@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from allowance.adapter import Airwallex, Ambiguous, ProviderError  # noqa: E402
-from allowance.agent import ClaudeAgent, run  # noqa: E402
+from allowance.agent import LLMAgent, run  # noqa: E402
 from allowance.service import ALL_FAILURE_TYPES, Refused, Service  # noqa: E402
 from allowance.store import Store  # noqa: E402
 
@@ -61,7 +61,7 @@ SVC.s.init_policy("USD", per_tx_cap=int(os.environ.get("PER_TX_CAP", 100_000)), 
 for _k, _env in (("per_tx_cap", "PER_TX_CAP"), ("daily_cap", "DAILY_CAP"), ("dual_approval_over", "COSIGN_OVER")):
     if os.environ.get(_env):  # env changes apply on restart (INSERT OR IGNORE alone would silently keep old caps)
         SVC.s.db.execute(f"UPDATE policy SET {_k}=? WHERE id=1", (int(os.environ[_env]),))
-AGENT = ClaudeAgent()
+AGENT = LLMAgent()
 
 
 def cents(v):
@@ -88,7 +88,7 @@ def state():
     return {"me": None, "operators": sorted(set(OPERATORS.values())),
             "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
             "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
-            "agent": "claude" if AGENT.key else "rules (no LLM key set)", "drop_armed": PROV.armed,
+            "agent": AGENT.label, "drop_armed": PROV.armed,
             "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only"}
 
 
@@ -193,7 +193,7 @@ def handle(method, path, body, op="operator"):
             ben = body.get("beneficiary_id") or inc["beneficiary_id"]
             return SVC.pay(unused_approval(iid, role), role, ben, amt, "USD")
         if act == "agent":
-            return run(SVC, iid, ClaudeAgent())  # one agent object per request: no shared per-call flags between threads
+            return run(SVC, iid, LLMAgent())  # one agent object per request: no shared per-call flags between threads
         if act == "supplier":
             SVC.supplier_message(iid, body.get("text", ""))
             return {}
@@ -322,5 +322,5 @@ if __name__ == "__main__":
     if not OPERATORS:
         sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
-    print(f"Operator desk on http://{host}:{port}  (Airwallex SANDBOX, agent={'claude' if AGENT.key else 'rules'})")
+    print(f"Operator desk on http://{host}:{port}  (Airwallex SANDBOX, agent={AGENT.label})")
     ThreadingHTTPServer((host, port), H).serve_forever()
