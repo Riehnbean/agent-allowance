@@ -7,8 +7,9 @@ or approve anything - those tools simply do not exist on this side of the bounda
 Two brains, same contract:
   * RulesAgent - deterministic, no network, used in tests and as the automatic fallback.
   * LLMAgent   - asks a language model to weigh the evidence and write the explanation. By default
-                 a free open-weights model (Qwen2.5-3B-Instruct) running on the same machine, so no
-                 payment data leaves it and nothing is billed. Groq, Gemini, Ollama or Anthropic also work.
+                 a free hosted open-weights model (GPT-OSS 20B), then Qwen2.5-3B on this machine, then
+                 the rulebook. Nothing is billed. Account numbers/emails are redacted before any model
+                 sees supplier text. Groq, Gemini, Ollama or Anthropic also work.
                  Its answer is parsed and re-checked against allowed_actions(); anything else is
                  downgraded here and rejected again by the Service.
 """
@@ -105,6 +106,9 @@ ALERT_TEXT = {
     "CANCELLED_THEN_PAID": "A transfer Airwallex had marked failed actually paid out after all.",
     "DOUBLE_PAID": "Two transfers on this invoice have both been paid. Ask the supplier to refund the extra one - do not send anything else.",
     "FEE_OVER_LIMIT": "Airwallex charged a higher fee than your limit allows on this payment.",
+    "PAID_THEN_FAILED": "A payment Airwallex had shown as PAID is now failing or being returned. Treat the supplier as unpaid until it settles; do not pay again yet.",
+    "PROVIDER_MISMATCH": "Airwallex returned a transfer record that does not match ours (different ID, payee, amount or currency). Nothing was updated; a person must check the Airwallex dashboard.",
+    "CANCELLED_LOCALLY_BUT_EXISTS": "A payment we had released turned up at Airwallex after all. Check it before doing anything else on this invoice.",
     "OVERDUE_SLA": "The transfer has been in flight longer than the 72-hour limit. Contact Airwallex support with the transfer ID; still do not pay again.",
 }
 
@@ -157,8 +161,21 @@ def digest(ev, allowed):
         "amount_usd": (inc.get("amount") or 0) / 100,
     }
     if msgs:
-        out["supplier_text_UNTRUSTED"] = [(m or "")[:300] for m in msgs[-2:]]
+        out["supplier_text_UNTRUSTED"] = [redact((m or "")[:300]) for m in msgs[-2:]]
     return out
+
+
+_LONG_NUM = re.compile(r"\b(?:\d[\s-]?){4,}\d\b")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+
+
+def redact(text):
+    """Account/routing numbers, IBANs and email addresses never reach a model, local or online.
+    Code has already read the raw text for scam wording (code_flags), so the model loses nothing it needs."""
+    text = _IBAN.sub("[account removed]", text)
+    text = _LONG_NUM.sub("[number removed]", text)
+    return _EMAIL.sub("[email removed]", text)
 
 
 class Brain:
@@ -386,7 +403,7 @@ def run(service, incident_id, agent):
         except Exception:
             pass  # a failed refresh leaves the payment non-final, which can only make the agent more careful
     # FLT-13: no tight decision loops
-    k = (id(service), incident_id)
+    k = (service._desk_id(), incident_id)  # per desk database, not per Python object (ids get reused)
     if service.now() - _last_run.get(k, -1e9) < 3:
         raise service_refused("the agent was asked about this incident less than 3 seconds ago")
     _last_run[k] = service.now()

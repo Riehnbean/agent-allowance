@@ -16,7 +16,7 @@ Source catalogue: [docs/failure-catalogue.md](docs/failure-catalogue.md) (built 
 | INT-05a | Locale decimal confusion | ✅ | Strict amount parser: digits + optional .dd only; "1.250,00" and "1,250" rejected | server.cents |
 | INT-05b | Ambiguous currency symbol | ✅ | Single currency (USD) enforced by policy and payee account currency check | test_currency_mismatch_blocked_before_send |
 | INT-05c | Minor-unit exponent errors | ✅ | Integer cents internally; exact decimal string to Airwallex | test_amounts_are_exact |
-| INT-06 | Indirect prompt injection in invoice or email | ✅ | Supplier text is "untrusted" data; agent has no money tools; bank-change wording forces ESCALATE | test_supplier_bank_change_request_escalates_even_if_retryable |
+| INT-06 | Indirect prompt injection in invoice or email | ✅ | Supplier text is "untrusted" data; agent has no money tools; bank-change and instruction-to-the-AI wording raise FRAUD_SIGNAL (a heuristic - the real boundary is that code only allows listed actions) | test_supplier_bank_change_request_escalates_even_if_retryable |
 | INT-07 | Fake invoice from a non-supplier | 🟡 | Only allow-listed payees can be paid; no automated intake from email in this build |  |
 | INT-08 | Spoofed or lookalike sender domain | ⚪ | No email intake in scope (operator opens incidents) |  |
 | INT-09 | Overbilling against PO or contract | ⚪ | No PO/contract data in scope |  |
@@ -52,7 +52,7 @@ Source catalogue: [docs/failure-catalogue.md](docs/failure-catalogue.md) (built 
 | RES-03 | Reservation leak | ✅ | Stale RESERVED recovered by the reconciler with the same request_id | test_crash_after_reserve_is_recovered_once |
 | RES-04 | Premature release | ✅ | Budget released only on a final CANCELLED; UNKNOWN keeps it reserved across restarts/days | test_unknown_survives_restart_and_counts_against_cap |
 | RES-05 | FX moved or quote expired | ⚪ | Single currency, no FX in scope |  |
-| RES-06 | Fees not budgeted, beneficiary short-paid | ✅ | Fees recorded from amount_payer_pays/fee_amount, counted against caps, over-limit alarm | test_fees_count_and_over_limit_alerts |
+| RES-06 | Fees not budgeted, beneficiary short-paid | ✅ | Fees recorded from amount_payer_pays/fee_amount and counted against caps; while a payment is uncertain the max possible fee is held; a failed transfer's fee stays counted; over-limit alarm | test_fees_count_and_over_limit_alerts, test_unknown_payment_reserves_its_possible_fee, test_cancelled_payment_keeps_its_nonrefundable_fee_in_budget |
 | RES-07 | Wrong source wallet or unintended conversion | ✅ | source_currency = transfer_currency = USD enforced |  |
 | RES-08 | Account or method limits breached | ✅ | Per-payment, daily and per-payee caps; provider limit errors recorded as REJECTED | test_per_tx_cap, test_per_supplier_cap |
 | RES-09 | Agent loop runs away with spend | ✅ | Payments-per-hour limit, attempt cap, agent decision throttle | test_rate_limit, test_replace_loop_capped, test_agent_loop_throttled |
@@ -122,7 +122,7 @@ Source catalogue: [docs/failure-catalogue.md](docs/failure-catalogue.md) (built 
 | MON-02 | Agent holds an admin key | ✅ | The agent holds no Airwallex key at all; only the adapter does |  |
 | MON-03 | Webhook secret rotation breaks verification | 🟡 | Single webhook secret; rotation not automated |  |
 | MON-04 | Thresholds leaked via the prompt | 🟡 | Evidence shows remaining budget only; no policy internals in the prompt |  |
-| MON-05 | Model or prompt change regression | ✅ | 82 tests (incl. 20 red-team tests written by an independent reviewer) + 6 live sandbox scenarios | tests/, scripts/sandbox_e2e.py |
+| MON-05 | Model or prompt change regression | ✅ | 96 tests (incl. 20 red-team tests + 9 review tests from two independent reviewers) + 6 live sandbox scenarios + a 9-incident model exam (scripts/llm_eval.py) | tests/, scripts/sandbox_e2e.py |
 | MON-06 | Tool or MCP supply-chain poisoning | ⚪ | No MCP/tool plugins in the agent |  |
 | MON-07 | Agent memory poisoning | ✅ | Agent is stateless per decision (no memory to poison) |  |
 | MON-08 | No working kill switch | ✅ | STOP switch checked in the create path, including resubmits | test_kill_switch_blocks, test_stop_blocks_resubmit_of_unknown |

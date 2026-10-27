@@ -108,7 +108,7 @@ class Break(B):
         p = self.pay_original(iid, amount=90_000)
         self.fake.by_id[p["provider_id"]]["status"] = "SUSPENDED"  # any status the code doesn't list
         self.svc.reconcile(p["request_id"])
-        self.assertEqual(self.svc.s.committed_today(self.t), 90_000, "in-flight SUSPENDED payment not counted")
+        self.assertEqual(self.svc.s.committed_today(self.t), 90_000 + 2_500, "in-flight SUSPENDED payment not counted (amount + possible fee)")
 
     # 5 ------------------------------------------------------------------
     def test_unknown_becomes_cancelled_on_provider_error_while_money_moves(self):
@@ -152,7 +152,16 @@ class Break(B):
             time.sleep(0.3)
             return orig(now)
         self.svc.s.committed_today = slow
-        th = threading.Thread(target=lambda: self.svc.pay(ap, "original", BEN, 25_000, "USD"))
+        outcome = {}
+
+        def worker():
+            try:
+                outcome["result"] = self.svc.pay(ap, "original", BEN, 25_000, "USD")
+            except Refused as e:  # expected: STOP landed first - captured, not printed
+                outcome["refused"] = str(e)
+            except Exception as e:  # anything else is a real failure
+                outcome["error"] = repr(e)
+        th = threading.Thread(target=worker)
         th.start(); time.sleep(0.1)
         try:
             self.svc.kill("jordan")               # the server's STOP button, same Service/connection
@@ -161,6 +170,8 @@ class Break(B):
             err = e
         th.join()
         self.assertIsNone(err, f"STOP failed: {err}")
+        self.assertNotIn("error", outcome, outcome.get("error"))
+        self.assertTrue("refused" in outcome or self.fake.calls == 0 or outcome.get("result"), outcome)
 
     # 8 ------------------------------------------------------------------
     def test_fee_alert_overwrites_double_paid_and_agent_says_close(self):

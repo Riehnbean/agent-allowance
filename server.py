@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from allowance.adapter import Airwallex, Ambiguous, ProviderError  # noqa: E402
+from allowance.adapter import Airwallex, Ambiguous, ProviderError, details_hash  # noqa: E402
 from allowance.agent import LLMAgent, run, think_ahead  # noqa: E402
 from allowance.service import ALL_FAILURE_TYPES, Refused, Service  # noqa: E402
 from allowance.store import Store  # noqa: E402
@@ -79,6 +79,12 @@ def state():
     for i in s.q("SELECT * FROM incidents ORDER BY id DESC LIMIT 20"):
         pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,fee,anomaly,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
         aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
+        # Same rule the service enforces: co-sign is needed over the threshold for ONE payment, or for this payee's 24h total.
+        pol0 = s.policy()
+        day_to_payee = s.one("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE beneficiary_id=? AND status<>'CANCELLED' AND created_at>?",
+                             i["beneficiary_id"], time.time() - 86400)["s"]
+        for a in aps:
+            a["needs_cosign"] = a["amount"] > pol0["dual_approval_over"] or day_to_payee + a["amount"] > pol0["dual_approval_over"]
         last = s.one("SELECT body,at,provenance FROM events WHERE incident_id=? AND kind='decision' ORDER BY id DESC LIMIT 1", i["id"])
         ev = [dict(e, body=json.loads(e["body"])) for e in s.q("SELECT at,actor,kind,provenance,body FROM events WHERE incident_id=? ORDER BY id DESC LIMIT 30", i["id"])]
         allowed = SVC.allowed_actions(i["id"])
@@ -121,6 +127,11 @@ def reverify(requested_by, note):
                           requested_by, details=cur, override_reason=note)
 
 
+def _short(x):
+    import hashlib
+    return hashlib.sha256(str(x).encode()).hexdigest()[:12]
+
+
 def unused_approval(iid, role):
     a = SVC.s.one("SELECT id FROM approvals WHERE incident_id=? AND role=? AND used_by_request IS NULL ORDER BY id DESC LIMIT 1", iid, role)
     if not a:
@@ -145,10 +156,23 @@ def handle(method, path, body, op="operator"):
         pol = SVC.s.policy()
         if pol["killed_by"] == "system" and len(OPERATORS) > 1:
             # The desk stopped itself (payee edited, unknown transfers...). Two people resume it.
-            return {"pending": SVC.request_action("unkill", "desk", body.get("note"), op)}
+            # Bound to THIS stop: if the desk stops again for a different reason, the request no longer applies.
+            return {"pending": SVC.request_action("unkill", "desk|" + _short(pol["killed_reason"]), body.get("note"), op)}
         SVC.unkill(op)
         return {}
     if len(p) == 4 and p[1] == "pending" and p[3] == "confirm":
+        pend = SVC.s.one("SELECT * FROM pending_actions WHERE id=?", int(p[2]))
+        if pend and not pend["done_by"]:
+            # Check the request still describes the world BEFORE consuming it.
+            if pend["kind"] == "reverify":
+                ben, _, want = pend["target"].partition("|")
+                if not want or details_hash(API.get_beneficiary(ben)) != want:
+                    raise Refused("the payee's bank details at Airwallex changed after this request was made - "
+                                  "the request no longer matches what was checked; ask again")
+            if pend["kind"] == "unkill":
+                pol = SVC.s.policy()
+                if not pol["killed"] or "desk|" + _short(pol["killed_reason"]) != pend["target"]:
+                    raise Refused("the desk stopped again for a different reason since this request - ask again")
         a = SVC.confirm_action(int(p[2]), op)
         if a["kind"] == "unkill":
             SVC.unkill(f"{a['requested_by']}+{op}")
@@ -170,7 +194,13 @@ def handle(method, path, body, op="operator"):
     if path == "/api/payee/reverify":
         # Accepting changed bank details is a two-person action with a written note (BEC defence).
         if len(OPERATORS) > 1:
-            return {"pending": SVC.request_action("reverify", ensure_beneficiary(), body.get("note"), op)}
+            ben = ensure_beneficiary()
+            cur = API.get_beneficiary(ben)
+            last4 = ((cur.get("beneficiary") or cur).get("bank_details") or {}).get("account_number", "")[-4:]
+            note = (body.get("note") or "").strip()
+            # The request is bound to the exact bank details shown now; both people see the same masked account.
+            return {"pending": SVC.request_action("reverify", f"{ben}|{details_hash(cur)}",
+                                                  (note + f" [account ****{last4}]") if len(note) >= 15 else note, op)}
         reverify(op, body.get("note"))
         return {}
     if path == "/api/drop-next":
@@ -209,6 +239,8 @@ def handle(method, path, body, op="operator"):
                 return {"pending": SVC.request_action("reopen", iid, body.get("note"), op)}
             SVC.reopen(iid, op, body.get("note", ""))
             return {}
+        if act == "release":
+            return SVC.release(body["request_id"], op, body.get("note"))
         if act == "resend":
             return SVC.resend(body["request_id"], op)
         if act == "close":

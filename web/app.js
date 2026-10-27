@@ -90,6 +90,9 @@ function render() {
     if (["UNKNOWN", "RESERVED"].includes(p.status)) {
       const rs = el("button", "warnbtn", "Re-send (same request ID)"); rs.title = "Only if Airwallex has never heard of it. Same request ID, all checks run again; Airwallex refuses a true duplicate.";
       rs.onclick = () => act(`/api/incidents/${i.id}/resend`, { request_id: p.request_id }, x => "Status now " + x.status); r.append(rs);
+      const rl = el("button", null, "Release hold"); rl.title = "Only for a payment Airwallex has no record of (e.g. its approval expired). Needs a note; frees the budget.";
+      rl.onclick = () => { const n = ($(".note") || {}).value || ""; act(`/api/incidents/${i.id}/release`, { request_id: p.request_id, note: n }, x => "Payment now " + x.status); };
+      r.append(rl);
     }
     const rec = el("button", null, "Check Airwallex"); rec.title = "Reconcile: look this request up at Airwallex"; rec.onclick = () => act(`/api/payments/${p.request_id}/reconcile`, {}, x => "Airwallex says " + x.status); r.append(rec);
     if (!["PAID", "CANCELLED"].includes(p.status) && p.provider_id) {
@@ -122,7 +125,7 @@ function render() {
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
   if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";
   ops.append(ap, pay, note, reopen, close, rc); op.append(ops);
-  if (unused && !unused.cosigned_by && i.amount > S.policy.dual_approval_over) {
+  if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
     if (unused.approved_by !== S.me) {
       const cb = el("button", "primary", `Co-sign ${usd(i.amount)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
       op.append(cb);

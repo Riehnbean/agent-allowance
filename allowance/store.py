@@ -193,8 +193,8 @@ class Store:
         day0 = now - 86400  # rolling 24 hours (a calendar-day reset at UTC midnight = 7pm Central)
         r = self.one(
             # per BANK ACCOUNT, not per payee record - two records for one account share one cap
-            "SELECT COALESCE(SUM(p.amount+p.fee),0) s FROM payments p JOIN beneficiaries b ON b.id=p.beneficiary_id"
-            " WHERE b.account_key=(SELECT account_key FROM beneficiaries WHERE id=?) AND p.status<>'CANCELLED'"
+            "SELECT COALESCE(SUM(" + _COST.replace("{p}", "p.") + "),0) s FROM payments p JOIN beneficiaries b ON b.id=p.beneficiary_id"
+            " WHERE b.account_key=(SELECT account_key FROM beneficiaries WHERE id=?)"
             " AND (p.created_at>=? OR p.status NOT IN ('PAID','CANCELLED'))",
             beneficiary_id, day0,
         )
@@ -225,11 +225,20 @@ class Store:
         now = now or time.time()
         day0 = now - 86400  # rolling 24 hours (a calendar-day reset at UTC midnight = 7pm Central)
         r = self.one(
-            "SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE status<>'CANCELLED'"
-            " AND (created_at>=? OR status NOT IN ('PAID','CANCELLED'))",
+            "SELECT COALESCE(SUM(" + _COST.replace("{p}", "") + "),0) s FROM payments"
+            " WHERE (created_at>=? OR status NOT IN ('PAID','CANCELLED'))",
             day0,
         )
         return r["s"]
+
+
+# What a payment can cost against the caps:
+#   PAID       -> amount + the fee Airwallex reported
+#   CANCELLED  -> the fee only (a failed transfer's fee is not refunded; locally cancelled ones have fee 0)
+#   anything else (reserved / uncertain / in flight) -> amount + the larger of the reported fee and the
+#   policy's max_fee, because the real fee isn't known until Airwallex says so.
+_COST = ("CASE WHEN {p}status='CANCELLED' THEN {p}fee WHEN {p}status='PAID' THEN {p}amount+{p}fee"
+         " ELSE {p}amount+MAX({p}fee,(SELECT max_fee FROM policy WHERE id=1)) END")
 
 
 def _chain(prev, at, incident_id, actor, kind, provenance, body):

@@ -39,8 +39,8 @@ from .store import FINAL  # noqa: E402
 REQ_NS = uuid.UUID("5b1e8a0e-6b8f-4d0a-9a51-0a1d5f2c7e11")
 
 
-ALERT_RANK = {"DOUBLE_PAID": 100, "BENEFICIARY_CHANGED": 95, "CANCELLED_THEN_PAID": 90, "CANCELLED_LOCALLY_BUT_EXISTS": 85,
-              "PROVIDER_MISMATCH": 85, "PAID_THEN_CANCELLED": 80, "FRAUD_SIGNAL": 70, "OVERDUE_SLA": 40, "FEE_OVER_LIMIT": 10}
+ALERT_RANK = {"PROVIDER_MISMATCH": 97, "PAID_THEN_FAILED": 92, "DOUBLE_PAID": 100, "BENEFICIARY_CHANGED": 95, "CANCELLED_THEN_PAID": 90, "CANCELLED_LOCALLY_BUT_EXISTS": 85,
+              "PAID_THEN_CANCELLED": 80, "FRAUD_SIGNAL": 70, "OVERDUE_SLA": 40, "FEE_OVER_LIMIT": 10}
 
 
 class Refused(Exception):
@@ -191,6 +191,12 @@ class Service:
 
     def kill(self, operator, reason="operator stop"):
         with self.s.tx():
+            pol = self.s.policy()
+            if pol["killed"] and pol["killed_by"] == "system" and operator != "system":
+                # Pressing STOP on top of a system STOP must not lower what it takes to resume
+                # (a system STOP needs two people to clear).
+                self.s.log("operator", "kill_switch_pressed_again", "operator", None, by=operator, kept_reason=pol["killed_reason"])
+                return
             self.s.db.execute("UPDATE policy SET killed=1, killed_reason=?, killed_by=? WHERE id=1", (reason, operator))
             self.s.log("operator", "kill_switch_on", "operator", None, by=operator, reason=reason)
 
@@ -203,6 +209,8 @@ class Service:
     def pay(self, approval_id, role, beneficiary_id, amount, currency):
         """Reserve + submit one payment under an approval. Terms must match the approval exactly."""
         try:
+            if role == "replacement":
+                self._fresh_read_before_replacement(approval_id)
             try:
                 return self._pay(None, approval_id, role, beneficiary_id, amount, currency)
             except sqlite3.IntegrityError as e:
@@ -213,6 +221,20 @@ class Service:
             self.s.log("policy", "payment_refused", "decided", ap["incident_id"] if ap else None,
                        role=role, reason=str(e), amount=amount, beneficiary_id=beneficiary_id)
             raise
+
+    def _fresh_read_before_replacement(self, approval_id):
+        """A cached CANCELLED is not proof: Airwallex can still move a transfer. Re-read every earlier
+        payment on the incident right now; if any read fails, no replacement is sent."""
+        ap = self.s.one("SELECT incident_id FROM approvals WHERE id=?", approval_id)
+        if not ap:
+            raise Refused("no such approval")
+        for p in self.s.q("SELECT request_id FROM payments WHERE incident_id=?", ap["incident_id"]):
+            before = self.payment(p["request_id"])["checked_at"]
+            after = self.reconcile(p["request_id"])
+            if (after["checked_at"] or 0) <= (before or 0) and after["status_source"] != "provider_get":
+                raise Refused("could not re-read the earlier payment from Airwallex right now - no replacement sent")
+            if after["checked_at"] is None or self.now() - after["checked_at"] > 30:
+                raise Refused("could not get a fresh Airwallex status for the earlier payment - no replacement sent")
 
     def _pay(self, request_id, approval_id, role, beneficiary_id, amount, currency):
         with self.s.tx():
@@ -340,28 +362,53 @@ class Service:
             raise Refused(f"payment is {pay['status']}, nothing to re-send")
         if pay["status"] == "RESERVED" and self.now() - pay["updated_at"] < 60:
             raise Refused("the first send may still be in progress - try again in a minute")
+        ap = self.s.one("SELECT expires_at FROM approvals WHERE id=?", pay["approval_id"])
+        if not ap or self.now() > ap["expires_at"]:
+            self.s.log("policy", "resend_refused", "decided", pay["incident_id"], request_id=request_id, reason="approval expired")
+            raise Refused("the approval for this payment has expired, so it cannot be sent on that approval. It stays held "
+                          "(it is checked against Airwallex automatically); if Airwallex never received it, release it and approve again")
         r = self.reconcile(request_id)
         if r["status"] not in ("UNKNOWN", "RESERVED"):
             return r  # it existed after all
         self.s.log("operator", "resend_requested", "operator", pay["incident_id"], request_id=request_id, by=operator)
         return self.submit(request_id, first=False)
 
+    def release(self, request_id, operator, note):
+        """Free a held payment (RESERVED/UNKNOWN) that Airwallex has no record of, e.g. after its approval
+        expired. Looks it up first; if it appears later anyway, _set raises CANCELLED_LOCALLY_BUT_EXISTS."""
+        if not note or len(note.strip()) < 15:
+            raise Refused("write why it is safe to release this payment (at least a sentence)")
+        pay = self.payment(request_id)
+        if pay["status"] not in ("UNKNOWN", "RESERVED"):
+            raise Refused(f"payment is {pay['status']}; only a held payment can be released")
+        if self.now() - pay["updated_at"] < 15 * 60:
+            raise Refused("wait at least 15 minutes after the last send attempt before releasing a held payment")
+        r = self.reconcile(request_id)
+        if r["status"] not in ("UNKNOWN", "RESERVED"):
+            return r  # Airwallex has it after all - nothing to release
+        if self.p.find_by_request_id(request_id) is not None:
+            raise Refused("Airwallex now shows this payment - reconcile instead of releasing")
+        self._set(request_id, "CANCELLED", "none", failure_type="RELEASED_BY_OPERATOR", failure_message=note.strip()[:300])
+        self.s.log("operator", "payment_released", "operator", pay["incident_id"], request_id=request_id, by=operator, note=note.strip()[:1000])
+        return self.payment(request_id)
+
     def on_webhook(self, payload, event_id=None):
         """Webhooks are treated as a hint to look, never as the truth: we log the claim, then
         re-read the transfer from Airwallex. A forged, duplicated or out-of-order webhook therefore
         cannot change a payment's status by itself."""
         event_id = event_id or payload.get("id")
-        if event_id:
-            try:
-                with self.s.tx():
-                    self.s.db.execute("INSERT INTO webhook_events VALUES(?,?)", (str(event_id)[:100], self.now()))
-            except sqlite3.IntegrityError:
-                return None  # same event delivered again (Airwallex retries for ~3 days) - already handled
         obj = (payload.get("data") or {}).get("object") or payload.get("data") or {}
         tid, rid = obj.get("id"), obj.get("request_id")
         row = self.s.one("SELECT request_id, incident_id FROM payments WHERE provider_id=? OR request_id=?", tid or "-", rid or "-")
         if not row:
-            return None  # not ours: dropped (logging it would let anyone stuff the evidence log)
+            return None  # not ours: dropped before anything is stored (else anyone could grow the database)
+        if event_id:
+            try:
+                with self.s.tx():
+                    self.s.db.execute("DELETE FROM webhook_events WHERE at<?", (self.now() - 7 * 86400,))  # bounded retention
+                    self.s.db.execute("INSERT INTO webhook_events VALUES(?,?)", (str(event_id)[:100], self.now()))
+            except sqlite3.IntegrityError:
+                return None  # same event delivered again (Airwallex retries for ~3 days) - already handled
         self.s.log("provider", "webhook_hint", "untrusted", row["incident_id"],
                    name=str(payload.get("name"))[:80], claimed_status=str(obj.get("status"))[:40], transfer_id=tid, request_id=rid)
         # Throttle: anyone can POST a webhook, so at most one Airwallex re-read per payment every 5s.
@@ -534,7 +581,33 @@ class Service:
         elif pays:
             raise Refused("an original payment already exists for this incident")
 
+    def _mismatch(self, prev, t):
+        """Does this provider record actually describe OUR transfer? Only fields present are compared."""
+        why = []
+        if t.get("request_id") and t["request_id"] != prev["request_id"]:
+            why.append("request_id")
+        if prev["provider_id"] and t.get("id") and t["id"] != prev["provider_id"]:
+            why.append("transfer id")
+        if t.get("beneficiary_id") and t["beneficiary_id"] != prev["beneficiary_id"]:
+            why.append("payee")
+        if t.get("transfer_currency") and t["transfer_currency"] != prev["currency"]:
+            why.append("currency")
+        if t.get("transfer_amount") is not None:
+            try:
+                if str_to_minor(t["transfer_amount"]) != prev["amount"]:
+                    why.append("amount")
+            except (TypeError, ValueError):
+                why.append("amount")
+        return why
+
     def _apply_provider(self, request_id, t, source):
+        prev0 = self.payment(request_id)
+        bad = self._mismatch(prev0, t)
+        if bad:
+            self.s.log("provider", "provider_mismatch", "observed", prev0["incident_id"], request_id=request_id,
+                       fields=bad, got_id=str(t.get("id"))[:80], got_request_id=str(t.get("request_id"))[:80], got_status=str(t.get("status"))[:40])
+            self._anomaly(request_id, "PROVIDER_MISMATCH", "Airwallex returned a transfer that does not match ours (" + ", ".join(bad) + ")")
+            return
         status = t.get("status", "UNKNOWN")
         fail = t.get("failure") or {}
         ftype = (fail.get("details") or {}).get("type") or t.get("failure_type")
@@ -561,6 +634,9 @@ class Service:
             if cur == "CANCELLED" and row["status_source"] in ("none", "provider_create") and source == "provider_get" and status != "CANCELLED":
                 # We had assumed "never created", but Airwallex has it after all: the truth wins.
                 flip = "CANCELLED_LOCALLY_BUT_EXISTS"
+            elif cur == "PAID" and source == "provider_get" and status not in FINAL and status in ("FAILED", "RETURNED", "REVERSED", "SUSPENDED", "OVERDUE"):
+                # A fresh read says a PAID transfer is now failing/returned: it is no longer paid.
+                flip = "PAID_THEN_FAILED"
             elif cur in FINAL and status != cur:
                 if source == "provider_get" and status in FINAL:
                     # A FINAL status changed at the provider itself (e.g. PAID then returned, or a

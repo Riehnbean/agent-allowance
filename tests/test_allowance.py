@@ -144,9 +144,9 @@ class Ambiguity(Base):
         self.fake.lose_response_next = True
         self.pay_original(iid, amount=100_000)
         svc2 = self.make()  # "process restart"
-        self.assertEqual(svc2.s.committed_today(self.t), 100_000)
+        self.assertEqual(svc2.s.committed_today(self.t), 100_000 + 2_500)  # amount + possible fee held
         self.t += 86400 * 3  # days later it still counts while uncertain
-        self.assertEqual(svc2.s.committed_today(self.t), 100_000)
+        self.assertEqual(svc2.s.committed_today(self.t), 100_000 + 2_500)  # amount + possible fee held
 
     def test_unknown_not_found_resubmits_same_request_id(self):
         iid = self.incident()
@@ -481,7 +481,7 @@ class FailClosed(Base):
         self.assertNotIn("REPLACE", self.svc.allowed_actions(iid))
         with self.assertRaises(Refused):
             self.svc.approve(iid, "replacement", "zach")
-        self.assertEqual(self.svc.s.committed_today(self.t), 25_000)
+        self.assertEqual(self.svc.s.committed_today(self.t), 25_000 + 2_500)  # amount + possible fee held
         self.assertEqual(run(self.svc, iid, RulesAgent())["decision"], "WAIT")
 
     def test_database_index_blocks_second_live_payment_even_if_code_is_bypassed(self):
