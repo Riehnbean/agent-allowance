@@ -17,7 +17,20 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from allowance.adapter import Airwallex, Ambiguous  # noqa: E402
-from allowance.agent import LLMAgent, run  # noqa: E402
+from allowance import agent as _A  # noqa: E402
+from allowance.agent import LLMAgent  # noqa: E402
+
+
+def approve2(svc, iid, role, op="zach", **kw):
+    """Approve, then a second operator co-signs (several payments to one payee in 24h cross the co-sign limit)."""
+    ap = svc.approve(iid, role, op, **kw)
+    svc.cosign(ap, "jordan")
+    return ap
+
+
+def run(svc, iid, agent):
+    _A._last_run.clear()  # scripted demo: skip the 3-second human-click throttle
+    return _A.run(svc, iid, agent)
 from allowance.service import Refused, Service  # noqa: E402
 from allowance.store import Store  # noqa: E402
 
@@ -66,7 +79,7 @@ def main(db=None):
 
     say("\n== A: rail failure -> replace ==")
     a = svc.open_incident("Maple Lumber", "INV-1042", ben, 25_000, "USD")
-    p = svc.pay(svc.approve(a, "original", "zach"), "original", ben, 25_000, "USD")
+    p = svc.pay(approve2(svc, a, "original", "zach"), "original", ben, 25_000, "USD")
     say("original", p["status"], p["provider_id"])
     api.simulate(p["provider_id"], "SENT")
     svc.reconcile(p["request_id"])
@@ -76,7 +89,7 @@ def main(db=None):
     d = run(svc, a, agent)
     say("agent:", d)
     assert d["decision"] == "REPLACE", d
-    r = svc.pay(svc.approve(a, "replacement", "zach"), "replacement", ben, 25_000, "USD")
+    r = svc.pay(approve2(svc, a, "replacement", "zach"), "replacement", ben, 25_000, "USD")
     api.simulate(r["provider_id"], "SENT")
     api.simulate(r["provider_id"], "PAID")
     svc.reconcile(r["request_id"])
@@ -87,11 +100,11 @@ def main(db=None):
     say("\n== B: lost reply after submit ==")
     b = svc.open_incident("Maple Lumber", "INV-1043", ben, 30_000, "USD")
     prov.armed = True
-    p = svc.pay(svc.approve(b, "original", "zach"), "original", ben, 30_000, "USD")
+    p = svc.pay(approve2(svc, b, "original", "zach"), "original", ben, 30_000, "USD")
     say("original", p["status"], "(money held:", svc.s.committed_today(), "cents committed today)")
     say("agent:", run(svc, b, agent))
     try:
-        svc.pay(svc.approve(b, "replacement", "zach"), "replacement", ben, 30_000, "USD")
+        svc.pay(approve2(svc, b, "replacement", "zach"), "replacement", ben, 30_000, "USD")
         raise SystemExit("BUG: second payment allowed")
     except Refused as e:
         say("second payment refused:", e)
@@ -101,7 +114,7 @@ def main(db=None):
 
     say("\n== C: bounced + bank-change email ==")
     c = svc.open_incident("Maple Lumber", "INV-1044", ben, 12_000, "USD")
-    p = svc.pay(svc.approve(c, "original", "zach"), "original", ben, 12_000, "USD")
+    p = svc.pay(approve2(svc, c, "original", "zach"), "original", ben, 12_000, "USD")
     api.simulate(p["provider_id"], "SENT")
     api.simulate(p["provider_id"], "FAILED", "ACCOUNT_CLOSED")
     svc.reconcile(p["request_id"])
@@ -112,7 +125,7 @@ def main(db=None):
     out["C"] = svc.receipt(c)
     say("\n== D: payee bank details edited at Airwallex after approval ==")
     d = svc.open_incident("Maple Lumber", "INV-1045", ben, 9_000, "USD")
-    ap = svc.approve(d, "original", "zach")
+    ap = approve2(svc, d, "original", "zach")
     cur = api.get_beneficiary(ben)
     cur["beneficiary"]["bank_details"]["account_number"] = "000111222333"
     cur["beneficiary"]["bank_details"].pop("bank_name", None)
@@ -130,7 +143,7 @@ def main(db=None):
     ben2 = beneficiary(api)
     svc.allow_beneficiary(ben2, "Birch Hardware Inc", "****6789 / ABA 026009593", "zach", override_reason="demo payee shares sandbox test account")
     e = svc.open_incident("Birch Hardware", "BH-311", ben2, 15_000, "USD")
-    p = svc.pay(svc.approve(e, "original", "zach"), "original", ben2, 15_000, "USD")
+    p = svc.pay(approve2(svc, e, "original", "zach"), "original", ben2, 15_000, "USD")
     api.simulate(p["provider_id"], "SENT")
     api.simulate(p["provider_id"], "PAID")
     svc.reconcile(p["request_id"])
