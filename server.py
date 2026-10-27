@@ -26,8 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOKEN = os.environ.get("OPERATOR_TOKEN", "")
 # Named operators for four-eyes approval: OPERATOR_TOKENS="zach:secret1,jordan:secret2"
 OPERATORS = {t: n for n, t in (x.split(":", 1) for x in os.environ.get("OPERATOR_TOKENS", "").split(",") if ":" in x)}
-if TOKEN:
-    OPERATORS.setdefault(TOKEN, "operator")
+if TOKEN and not OPERATORS:
+    OPERATORS[TOKEN] = "operator"  # single-operator demo mode; ignored once named operators exist
 
 
 def who(token):
@@ -58,6 +58,9 @@ API = Airwallex()
 PROV = DropOnce(API)
 SVC = Service(Store(DB), PROV)
 SVC.s.init_policy("USD", per_tx_cap=int(os.environ.get("PER_TX_CAP", 100_000)), daily_cap=int(os.environ.get("DAILY_CAP", 300_000)))
+for _k, _env in (("per_tx_cap", "PER_TX_CAP"), ("daily_cap", "DAILY_CAP"), ("dual_approval_over", "COSIGN_OVER")):
+    if os.environ.get(_env):  # env changes apply on restart (INSERT OR IGNORE alone would silently keep old caps)
+        SVC.s.db.execute(f"UPDATE policy SET {_k}=? WHERE id=1", (int(os.environ[_env]),))
 AGENT = ClaudeAgent()
 
 
@@ -82,12 +85,14 @@ def state():
     pol["committed_today"] = s.committed_today()
     ok, n, bad = s.verify_chain()
     pol["log"] = {"intact": ok, "entries": n, "first_bad": bad}
-    return {"me": None, "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
+    return {"me": None, "operators": sorted(set(OPERATORS.values())),
+            "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
+            "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": "claude" if AGENT.key else "rules (no LLM key set)", "drop_armed": PROV.armed,
             "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only"}
 
 
-def ensure_beneficiary():
+def ensure_beneficiary(op="operator"):
     b = SVC.s.one("SELECT * FROM beneficiaries LIMIT 1")
     if b:
         return b["id"]
@@ -98,8 +103,18 @@ def ensure_beneficiary():
                         "bank_details": {"account_currency": "USD", "account_name": "Maple Lumber Supply LLC", "account_number": "123456789",
                                          "account_routing_type1": "aba", "account_routing_value1": "026009593", "bank_country_code": "US",
                                          "local_clearing_system": "ACH", "bank_account_category": "Checking"}}})
-    SVC.allow_beneficiary(r["id"], "Maple Lumber Supply LLC", "acct ****6789 · ABA 026009593", "operator")
+    SVC.allow_beneficiary(r["id"], "Maple Lumber Supply LLC", "acct ****6789 · ABA 026009593", op)
     return r["id"]
+
+
+def reverify(requested_by, note):
+    if not note or len(note.strip()) < 15:
+        raise Refused("write what you checked (at least a sentence)")
+    ben = ensure_beneficiary()
+    cur = API.get_beneficiary(ben)
+    bd = cur["beneficiary"]["bank_details"]
+    SVC.allow_beneficiary(ben, "Maple Lumber Supply LLC", f"acct ****{bd['account_number'][-4:]} · ABA {bd.get('account_routing_value1')}",
+                          requested_by, details=cur, override_reason=note)
 
 
 def unused_approval(iid, role):
@@ -118,13 +133,26 @@ def handle(method, path, body, op="operator"):
     if method != "POST":
         raise Refused("not found")
     if path == "/api/setup":
-        return {"beneficiary": ensure_beneficiary()}
+        return {"beneficiary": ensure_beneficiary(op)}
     if path == "/api/kill":
         SVC.kill(op, body.get("reason") or f"{op} pressed STOP")
         return {}
     if path == "/api/unkill":
+        pol = SVC.s.policy()
+        if pol["killed_by"] == "system" and len(OPERATORS) > 1:
+            # The desk stopped itself (payee edited, unknown transfers...). Two people resume it.
+            return {"pending": SVC.request_action("unkill", "desk", body.get("note"), op)}
         SVC.unkill(op)
         return {}
+    if len(p) == 4 and p[1] == "pending" and p[3] == "confirm":
+        a = SVC.confirm_action(int(p[2]), op)
+        if a["kind"] == "unkill":
+            SVC.unkill(f"{a['requested_by']}+{op}")
+        elif a["kind"] == "reverify":
+            reverify(a["requested_by"], f"{a['note']} (confirmed by {op})")
+        elif a["kind"] == "reopen":
+            SVC.reopen(int(a["target"]), f"{a['requested_by']}+{op}", a["note"])
+        return {"done": a["kind"]}
     if path == "/api/demo/edit-payee":
         # Demo of an attacker / insider editing the payee inside Airwallex after it was approved.
         ben = ensure_beneficiary()
@@ -136,12 +164,10 @@ def handle(method, path, body, op="operator"):
         SVC.s.log("system", "demo_payee_edited_at_airwallex", "operator", None, beneficiary_id=ben, new_account_last4=bd["account_number"][-4:])
         return {"account_last4": bd["account_number"][-4:]}
     if path == "/api/payee/reverify":
-        # Operator confirms the CURRENT bank details (after calling the supplier on a known number).
-        ben = ensure_beneficiary()
-        cur = API.get_beneficiary(ben)
-        bd = cur["beneficiary"]["bank_details"]
-        SVC.allow_beneficiary(ben, "Maple Lumber Supply LLC", f"acct ****{bd['account_number'][-4:]} · ABA {bd.get('account_routing_value1')}", "operator",
-                              details=cur, override_reason=body.get("note") or "re-verified by phone")
+        # Accepting changed bank details is a two-person action with a written note (BEC defence).
+        if len(OPERATORS) > 1:
+            return {"pending": SVC.request_action("reverify", ensure_beneficiary(), body.get("note"), op)}
+        reverify(op, body.get("note"))
         return {}
     if path == "/api/drop-next":
         PROV.armed = True
@@ -158,24 +184,29 @@ def handle(method, path, body, op="operator"):
         if act == "approve":
             return {"approval": SVC.approve(iid, body["role"], op, ttl=int(body.get("ttl", 900)))}
         if act == "cosign":
-            co = who(body.get("cosigner_token", ""))
-            if not co:
-                raise Refused("co-signer token not recognised")
-            SVC.cosign(unused_approval(iid, body["role"]), co)
-            return {"cosigned_by": co}
+            # The co-signer signs from THEIR OWN session; nobody types anyone else's secret.
+            SVC.cosign(unused_approval(iid, body["role"]), op)
+            return {"cosigned_by": op}
         if act == "pay":
             role = body["role"]
             amt = cents(body["amount"]) if body.get("amount") else inc["amount"]
             ben = body.get("beneficiary_id") or inc["beneficiary_id"]
             return SVC.pay(unused_approval(iid, role), role, ben, amt, "USD")
         if act == "agent":
-            return run(SVC, iid, AGENT)
+            return run(SVC, iid, ClaudeAgent())  # one agent object per request: no shared per-call flags between threads
         if act == "supplier":
             SVC.supplier_message(iid, body.get("text", ""))
             return {}
         if act == "reopen":
+            serious = inc["alert"] in ("DOUBLE_PAID", "BENEFICIARY_CHANGED", "CANCELLED_THEN_PAID", "PAID_THEN_CANCELLED", "FRAUD_SIGNAL")
+            last = SVC.s.one("SELECT failure_type FROM payments WHERE incident_id=? ORDER BY created_at DESC LIMIT 1", iid)
+            from allowance.service import DETAILS_PROBLEM, DELIBERATE
+            if (serious or (last and last["failure_type"] in DETAILS_PROBLEM | DELIBERATE)) and len(OPERATORS) > 1:
+                return {"pending": SVC.request_action("reopen", iid, body.get("note"), op)}
             SVC.reopen(iid, op, body.get("note", ""))
             return {}
+        if act == "resend":
+            return SVC.resend(body["request_id"], op)
         if act == "close":
             SVC.close(iid, op, note=body.get("note"))
             return {}
@@ -218,7 +249,12 @@ class H(BaseHTTPRequestHandler):
         if method == "POST" and path == "/webhook/airwallex":
             # A webhook only makes us re-read Airwallex; it never sets a status by itself. If a signing
             # secret is configured, unsigned / stale / forged deliveries are dropped before that.
-            n = min(int(self.headers.get("Content-Length") or 0), 65536)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if not 0 < n <= 65536:
+                return self._send(400, {"error": "bad length"})
             raw = self.rfile.read(n) or b"{}"
             secret = os.environ.get("AWX_WEBHOOK_SECRET")
             if secret:
@@ -244,7 +280,10 @@ class H(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}") if n else {}
-            self._send(200, handle(method, path, body, op))
+            out = handle(method, path, body, op)
+            if path == "/api/state":
+                out["me"] = op
+            self._send(200, out)
         except Refused as e:
             self._send(409, {"refused": str(e)})
         except ProviderError as e:

@@ -40,7 +40,7 @@ export AWX_CLIENT_ID=...  AWX_API_KEY=...        # sandbox scoped key
 export OPERATOR_TOKEN=choose-a-secret
 # optional: export ANTHROPIC_API_KEY=...  (LLM agent; otherwise the deterministic rules agent answers)
 python3 server.py                                  # http://127.0.0.1:8710
-python3 -m unittest -v tests.test_allowance        # 25 acceptance tests, no network
+python3 -m unittest -v tests.test_allowance        # 82 tests incl. an independent red-team suite, no network
 python3 scripts/sandbox_e2e.py                     # 3 scenarios against the live sandbox
 ```
 

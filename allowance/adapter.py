@@ -6,6 +6,7 @@ The agent never calls it directly; the incident service does, after policy check
 Sandbox only: the base URL is pinned to api.sandbox.airwallex.com and the
 constructor refuses anything else, so this code cannot move real money.
 """
+import http.client
 import json
 import os
 import socket
@@ -53,7 +54,10 @@ class Airwallex:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 raw = r.read()
+            try:
                 return json.loads(raw) if raw else {}
+            except ValueError:
+                raise Ambiguous(f"{method} {path}: 2xx with an unreadable body") from None
         except urllib.error.HTTPError as e:
             try:
                 err = json.loads(e.read() or b"{}")
@@ -62,7 +66,7 @@ class Airwallex:
             if e.code >= 500:
                 raise Ambiguous(f"{method} {path}: HTTP {e.code}") from None
             raise ProviderError(e.code, err.get("code", "error"), err.get("message", ""), err.get("details")) from None
-        except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError) as e:
+        except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError, OSError, http.client.HTTPException) as e:
             raise Ambiguous(f"{method} {path}: {e}") from None
 
     def _auth(self):
@@ -94,10 +98,14 @@ class Airwallex:
             return self._raw("POST", "/transfers/create", body)
         except ProviderError as e:
             if e.code == "duplicate_request_id":
-                # Airwallex already has this request: return the existing transfer instead of a second one.
+                # Airwallex already has this request: adopt the existing transfer, never a second one.
                 tid = (e.details or {}).get("id")
                 if tid:
                     return self.get_transfer(tid)
+                found = self.find_by_request_id(request_id)
+                if found:
+                    return found
+                raise Ambiguous("duplicate_request_id without a transfer id - it exists somewhere; look it up later") from None
             raise
 
     def get_beneficiary(self, beneficiary_id):
@@ -111,7 +119,7 @@ class Airwallex:
 
     def find_by_request_id(self, request_id):
         r = self._raw("GET", f"/transfers?request_id={request_id}&page_size=10")
-        items = r.get("items", [])
+        items = [t for t in r.get("items", []) if t.get("request_id") == request_id]  # never trust the filter blindly
         return items[0] if items else None
 
     def list_transfers_since(self, since_unix, pages=5):

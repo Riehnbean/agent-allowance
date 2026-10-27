@@ -27,6 +27,14 @@ async function load() {
   $("#agentname").textContent = "Agent: " + S.agent;
   $("#agentname").textContent += p.log ? (p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`) : "";
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
+  const pend = $("#pending"); pend.replaceChildren();
+  for (const a of S.pending || []) {
+    const li = el("div", "pend"); li.append(el("b", null, a.kind.toUpperCase()), el("span", null, ` requested by ${a.requested_by}: "${a.note}"`));
+    if (a.requested_by !== S.me) { const b = el("button", "primary", "Confirm as " + S.me); b.onclick = () => act(`/api/pending/${a.id}/confirm`, {}, r => "Confirmed: " + r.done); li.append(b); }
+    else li.append(el("small", null, " - waiting for someone else"));
+    pend.append(li);
+  }
+  pend.hidden = !pend.children.length;
   const k = $("#kill"); k.textContent = p.killed ? "STOPPED - tap to resume" : "STOP all payments"; k.dataset.on = p.killed ? "1" : "";
   const list = $("#list"); list.replaceChildren();
   for (const i of S.incidents) {
@@ -74,6 +82,10 @@ function render() {
     if (p.fee) l.append(el("small", null, "Airwallex fee " + usd(p.fee)));
     l.append(el("small", null, `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
     const r = el("div", "payacts");
+    if (["UNKNOWN", "RESERVED"].includes(p.status)) {
+      const rs = el("button", "warnbtn", "Re-send (same request ID)"); rs.title = "Only if Airwallex has never heard of it. Same request ID, all checks run again; Airwallex refuses a true duplicate.";
+      rs.onclick = () => act(`/api/incidents/${i.id}/resend`, { request_id: p.request_id }, x => "Status now " + x.status); r.append(rs);
+    }
     const rec = el("button", null, "Check Airwallex"); rec.title = "Reconcile: look this request up at Airwallex"; rec.onclick = () => act(`/api/payments/${p.request_id}/reconcile`, {}, x => "Airwallex says " + x.status); r.append(rec);
     if (!["PAID", "CANCELLED"].includes(p.status) && p.provider_id) {
       const sim = el("span", "sim"); sim.append(el("small", null, "Sandbox bank simulator:"));
@@ -105,11 +117,11 @@ function render() {
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
   if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";
   ops.append(ap, pay, note, reopen, close, rc); op.append(ops);
-  if (unused && i.amount > S.policy.dual_approval_over && !unused.cosigned_by) {
-    const cs = el("form", "row"); const ct = el("input"); ct.type = "password"; ct.placeholder = "Second person's operator token";
-    const cb = el("button", null, "Co-sign (second person)"); cs.append(ct, cb);
-    cs.onsubmit = e => { e.preventDefault(); act(`/api/incidents/${i.id}/cosign`, { role, cosigner_token: ct.value }, r => "Co-signed by " + r.cosigned_by); };
-    op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)}: a second, different person must co-sign before it can be sent.`), cs);
+  if (unused && !unused.cosigned_by && i.amount > S.policy.dual_approval_over) {
+    if (unused.approved_by !== S.me) {
+      const cb = el("button", "primary", `Co-sign ${usd(i.amount)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
+      op.append(cb);
+    } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${S.me} must open this desk with their own sign-in and co-sign.`));
   }
   op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${usd(unused.amount)}, USD, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
   d.append(op);
@@ -123,7 +135,8 @@ function render() {
   const again = el("button", null, "Pay the supplier again right now"); again.onclick = () => trick("replacement", {});
   more.disabled = again.disabled = i.state !== "OPEN";
   const edit = el("button", null, "Change the supplier's bank account inside Airwallex"); edit.onclick = () => act("/api/demo/edit-payee", {}, r => `Payee's account changed at Airwallex to ****${r.account_last4}. Now try sending a payment.`);
-  const rever = el("button", null, "I called the supplier - accept their current details"); rever.onclick = () => act("/api/payee/reverify", { note: "Operator re-verified by phone on file" }, "Payee re-verified");
+  const rever = el("button", null, "I called the supplier - accept their current details"); rever.title = "Uses the note box above. With two operators this needs a second person to confirm.";
+  rever.onclick = () => act("/api/payee/reverify", { note: note.value }, r => r.pending ? `Request #${r.pending} waiting for a second person to confirm` : "Payee re-verified");
   tb.append(drop, more, again, edit, rever); br.append(tb);
   const sm = el("form", "row"); const ta = el("input"); ta.placeholder = "Supplier email text (untrusted)…"; ta.value = "Our bank changed - please send it to our new account 55667788 today.";
   const sb = el("button", null, "Add supplier message"); sm.append(ta, sb); sm.onsubmit = e => { e.preventDefault(); act(`/api/incidents/${i.id}/supplier`, { text: ta.value }, "Supplier message logged as untrusted"); };
@@ -142,7 +155,11 @@ function render() {
 }
 
 $("#newinc").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act("/api/incidents", { invoice: f.get("invoice"), amount: f.get("amount"), separate_invoice: !!f.get("separate_invoice") }, r => { current = r.id; return "Incident opened"; }); };
-$("#kill").onclick = () => S?.policy.killed ? act("/api/unkill", {}, "Payments resumed") : act("/api/kill", {}, "Everything stopped - no payment can be sent");
+$("#kill").onclick = () => {
+  if (!S?.policy.killed) return act("/api/kill", {}, "Everything stopped - no payment can be sent");
+  const box = $("#resume"); box.hidden = !box.hidden;
+};
+$("#resumeform").onsubmit = e => { e.preventDefault(); act("/api/unkill", { note: $("#resumenote").value }, r => r.pending ? `Resume request #${r.pending} needs a second person` : "Payments resumed"); $("#resume").hidden = true; };
 $("#gateform").onsubmit = e => { e.preventDefault(); token = $("#tok").value; try { sessionStorage.setItem("op-token", token); } catch {} load().catch(err => toast(err.message, true)); };
 load().catch(() => { $("#gate").hidden = false; });
 setInterval(() => { if (!document.hidden && token) load().catch(() => {}); }, 8000);

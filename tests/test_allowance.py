@@ -130,10 +130,9 @@ class Ambiguity(Base):
         self.assertNotIn("REPLACE", self.svc.allowed_actions(iid))
         d = run(self.svc, iid, RulesAgent())
         self.assertEqual(d["decision"], "WAIT")
-        # Even with a fresh approval, code refuses a second payment
-        ap2 = self.svc.approve(iid, "replacement", "zach")
-        with self.assertRaises(Refused):
-            self.svc.pay(ap2, "replacement", BEN, 25_000, "USD")
+        # Even approving a second payment is refused while the first is unknown
+        with self.assertRaisesRegex(Refused, "confirms the previous payment failed"):
+            self.svc.approve(iid, "replacement", "zach")
         # Reconcile with the SAME request id finds the real transfer; still exactly one at Airwallex
         r = self.svc.reconcile(p["request_id"])
         self.assertEqual(r["status"], "SCHEDULED")
@@ -158,7 +157,8 @@ class Ambiguity(Base):
         p = self.svc.pay(ap, "original", BEN, 25_000, "USD")
         self.svc.submit = orig
         self.svc._set(p["request_id"], "UNKNOWN", "none")
-        r = self.svc.reconcile(p["request_id"])
+        self.assertEqual(self.svc.reconcile(p["request_id"])["status"], "UNKNOWN")  # looking never sends
+        r = self.svc.resend(p["request_id"], "zach")                                # an operator decides to
         self.assertEqual(r["status"], "SCHEDULED")
         self.assertEqual(list(self.fake.by_req), [p["request_id"]])
 
@@ -213,7 +213,7 @@ class Approvals(Base):
         p = self.svc.pay(ap, "original", BEN, 25_000, "USD")
         self.svc.submit = orig
         self.svc.kill("zach")
-        with self.assertRaisesRegex(Refused, "kill"):
+        with self.assertRaisesRegex(Refused, "STOP"):
             self.svc.submit(p["request_id"])
         self.assertEqual(self.svc.payment(p["request_id"])["status"], "CANCELLED")
         self.assertEqual(self.fake.calls, 0)
@@ -257,10 +257,9 @@ class Replacement(Base):
         ap = self.svc.approve(iid, "replacement", "zach")
         r = self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
         self.assertNotEqual(r["request_id"], p["request_id"])
-        # a second replacement is refused by the duplicate lock
-        ap3 = self.svc.approve(iid, "replacement", "zach")
-        with self.assertRaisesRegex(Refused, "duplicate lock"):
-            self.svc.pay(ap3, "replacement", BEN, 25_000, "USD")
+        # a second replacement can't even be approved while the first is in flight
+        with self.assertRaisesRegex(Refused, "confirms the previous payment failed"):
+            self.svc.approve(iid, "replacement", "zach")
         self.fake.simulate(r["provider_id"], "PAID")
         self.svc.reconcile(r["request_id"])
         self.svc.close(iid, "zach")
@@ -436,8 +435,9 @@ class Holes(Base):
         del self.fake.by_req[p["request_id"]]  # pretend it never reached Airwallex
         self.fake.by_id.clear()
         self.svc.kill("zach")
-        with self.assertRaisesRegex(Refused, "only look"):
-            self.svc.reconcile(p["request_id"])
+        self.svc.reconcile(p["request_id"])  # just looks
+        with self.assertRaisesRegex(Refused, "STOP"):
+            self.svc.resend(p["request_id"], "zach")
         self.assertEqual(self.fake.calls, 1)
 
     def test_crash_after_reserve_is_recovered_once(self):
@@ -447,9 +447,12 @@ class Holes(Base):
         self.svc.submit = lambda rid: self.svc.payment(rid)  # crash before the provider call
         p = self.svc.pay(ap, "original", BEN, 25_000, "USD")
         self.svc.submit = orig
-        self.assertEqual(self.svc.reconcile(p["request_id"])["status"], "RESERVED")  # too fresh, could be in progress
+        with self.assertRaisesRegex(Refused, "in progress"):
+            self.svc.resend(p["request_id"], "zach")  # too fresh, the first send could still be running
+        self.svc.sweep(stale_after=0)
+        self.assertEqual(self.svc.payment(p["request_id"])["status"], "RESERVED")  # the sweeper only looks
         self.t += 120
-        self.assertEqual(self.svc.reconcile(p["request_id"])["status"], "SCHEDULED")
+        self.assertEqual(self.svc.resend(p["request_id"], "zach")["status"], "SCHEDULED")
         self.svc.reconcile(p["request_id"])
         self.assertEqual(len(self.fake.by_req), 1)
 
@@ -476,9 +479,8 @@ class FailClosed(Base):
         self.fake.by_id[p["provider_id"]]["status"] = "IN_APPROVAL"  # a status this code never planned for
         self.svc.reconcile(p["request_id"])
         self.assertNotIn("REPLACE", self.svc.allowed_actions(iid))
-        ap = self.svc.approve(iid, "replacement", "zach")
-        with self.assertRaisesRegex(Refused, "duplicate lock"):
-            self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
+        with self.assertRaises(Refused):
+            self.svc.approve(iid, "replacement", "zach")
         self.assertEqual(self.svc.s.committed_today(self.t), 25_000)
         self.assertEqual(run(self.svc, iid, RulesAgent())["decision"], "WAIT")
 
@@ -486,7 +488,7 @@ class FailClosed(Base):
         import sqlite3
         iid = self.incident()
         p = self.pay_original(iid)
-        ap = self.svc.approve(iid, "replacement", "zach")
+        ap = self.svc.approve(iid, "original", "zach")
         with self.assertRaisesRegex(sqlite3.IntegrityError, "incident_id"):
             self.svc.s.db.execute("INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,created_at,updated_at)"
                                   " VALUES('x',?,'replacement',?,?,1,'USD','RESERVED',0,0)", (iid, ap, BEN))

@@ -9,6 +9,8 @@
   <span class="agentname" id="agentname"></span>
   <button id="kill" class="kill">STOP all payments</button>
 </header>
+<div id="resume" class="resume" hidden><form id="resumeform" class="row"><input id="resumenote" placeholder="Why is it safe to resume? (kept in the log)"><button class="primary">Resume payments</button></form></div>
+<div id="pending" class="pendingbar" hidden></div>
 <div id="gate" class="gate" hidden>
   <form id="gateform"><h2>Operator sign-in</h2><p>Enter the operator token this desk was started with. The AI agent never has it.</p>
   <input id="tok" type="password" autocomplete="current-password" placeholder="Operator token"><button>Open desk</button></form>

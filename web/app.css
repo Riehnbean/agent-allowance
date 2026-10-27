@@ -44,3 +44,6 @@ input,select{background:#0e1318;color:var(--ink);border:1px solid #334452;border
 .note{min-width:240px}
 button.primary:disabled{background:#2a333b;border-color:#3a4652;color:#8796a4}
 .row label.chk{flex-direction:row;align-items:center;gap:6px}.row label.chk input{width:auto}
+
+.resume{background:#2b1414;border-bottom:1px solid #7a2a2b;padding:10px 18px}.resume input{min-width:420px}
+.pendingbar{background:#1d2633;border-bottom:1px solid #3d5466;padding:8px 18px;display:grid;gap:6px}.pend{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.pend small{color:var(--mute)}

@@ -2,6 +2,7 @@
 so two workers (or two agent calls) can never both reserve the same budget."""
 import json
 import sqlite3
+import threading
 import time
 
 SCHEMA = """
@@ -12,6 +13,7 @@ CREATE TABLE IF NOT EXISTS policy(
   daily_cap INTEGER NOT NULL,
   killed INTEGER NOT NULL DEFAULT 0,
   killed_reason TEXT,
+  killed_by TEXT,
   per_supplier_daily_cap INTEGER NOT NULL DEFAULT 150000,
   max_payments_per_hour INTEGER NOT NULL DEFAULT 10,
   max_fee INTEGER NOT NULL DEFAULT 2500,
@@ -76,6 +78,7 @@ CREATE TABLE IF NOT EXISTS payments(
   status_source TEXT,                   -- provider_get | provider_create | none
   fee INTEGER NOT NULL DEFAULT 0,       -- provider fee in minor units, counted against budget
   anomaly TEXT,                         -- e.g. PAID_THEN_RETURNED, PAID_AFTER_CANCELLED
+  checked_at REAL,                      -- last time we read it from Airwallex (updated_at = last CHANGE)
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
@@ -92,6 +95,11 @@ CREATE TABLE IF NOT EXISTS events(
   body TEXT NOT NULL,
   prev_hash TEXT,                       -- hash chain: editing or removing any past row breaks every later hash
   hash TEXT
+);
+CREATE TABLE IF NOT EXISTS pending_actions(   -- two-person controls: one asks, a DIFFERENT person confirms
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL, target TEXT, note TEXT, requested_by TEXT NOT NULL, created_at REAL NOT NULL,
+  done_by TEXT, done_at REAL
 );
 CREATE TABLE IF NOT EXISTS webhook_events(id TEXT PRIMARY KEY, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
@@ -121,13 +129,14 @@ class Store:
     def __init__(self, path):
         self.db = sqlite3.connect(path, isolation_level=None, timeout=30, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        self.lock = threading.RLock()
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
 
     # transactions -----------------------------------------------------------
     def tx(self):
-        return _Tx(self.db)
+        return _Tx(self)
 
     def q(self, sql, *a):
         return self.db.execute(sql, a).fetchall()
@@ -136,6 +145,10 @@ class Store:
         return self.db.execute(sql, a).fetchone()
 
     def log(self, actor, kind, provenance, incident_id=None, **body):
+        with self.lock:
+            self._log(actor, kind, provenance, incident_id, **body)
+
+    def _log(self, actor, kind, provenance, incident_id=None, **body):
         own = not self.db.in_transaction
         if own:
             self.db.execute("BEGIN IMMEDIATE")
@@ -177,10 +190,12 @@ class Store:
 
     def committed_today_for(self, beneficiary_id, now=None):
         now = now or time.time()
-        day0 = now - (now % 86400)
+        day0 = now - 86400  # rolling 24 hours (a calendar-day reset at UTC midnight = 7pm Central)
         r = self.one(
-            "SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE beneficiary_id=? AND status<>'CANCELLED'"
-            " AND (created_at>=? OR status NOT IN ('PAID','CANCELLED'))",
+            # per BANK ACCOUNT, not per payee record - two records for one account share one cap
+            "SELECT COALESCE(SUM(p.amount+p.fee),0) s FROM payments p JOIN beneficiaries b ON b.id=p.beneficiary_id"
+            " WHERE b.account_key=(SELECT account_key FROM beneficiaries WHERE id=?) AND p.status<>'CANCELLED'"
+            " AND (p.created_at>=? OR p.status NOT IN ('PAID','CANCELLED'))",
             beneficiary_id, day0,
         )
         return r["s"]
@@ -208,7 +223,7 @@ class Store:
         """Every payment that might cost money, counted against today's cap -
         including reserved and uncertain ones, whatever day they started on."""
         now = now or time.time()
-        day0 = now - (now % 86400)
+        day0 = now - 86400  # rolling 24 hours (a calendar-day reset at UTC midnight = 7pm Central)
         r = self.one(
             "SELECT COALESCE(SUM(amount+fee),0) s FROM payments WHERE status<>'CANCELLED'"
             " AND (created_at>=? OR status NOT IN ('PAID','CANCELLED'))",
@@ -223,13 +238,23 @@ def _chain(prev, at, incident_id, actor, kind, provenance, body):
 
 
 class _Tx:
-    def __init__(self, db):
-        self.db = db
+    """One connection is shared by the server threads and the sweeper, so every transaction (and
+    every log write) holds a process-wide re-entrant lock. Nested tx() in the same thread joins the
+    outer transaction instead of failing."""
+    def __init__(self, store):
+        self.st = store
 
     def __enter__(self):
-        self.db.execute("BEGIN IMMEDIATE")
+        self.st.lock.acquire()
+        self.outer = not self.st.db.in_transaction
+        if self.outer:
+            self.st.db.execute("BEGIN IMMEDIATE")
         return self
 
     def __exit__(self, et, ev, tb):
-        self.db.execute("ROLLBACK" if et else "COMMIT")
+        try:
+            if self.outer:
+                self.st.db.execute("ROLLBACK" if et else "COMMIT")
+        finally:
+            self.st.lock.release()
         return False
