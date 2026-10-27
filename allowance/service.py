@@ -186,7 +186,8 @@ class Service:
         if r:
             return r["v"]
         v = str(uuid.uuid4())
-        self.s.db.execute("INSERT OR IGNORE INTO meta VALUES('desk_id',?)", (v,))
+        with self.s.lock:
+            self.s.db.execute("INSERT OR IGNORE INTO meta VALUES('desk_id',?)", (v,))
         return self.s.one("SELECT v FROM meta WHERE k='desk_id'")["v"]
 
     def kill(self, operator, reason="operator stop"):
@@ -704,7 +705,8 @@ class Service:
         if v is None:
             r = self.s.one("SELECT v FROM meta WHERE k=?", k)
             return r["v"] if r else None
-        self.s.db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
+        with self.s.lock:
+            self.s.db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
 
     def sweep(self, stale_after=600, sla=72 * 3600, paid_watch=30 * 86400):
         """Background safety net: re-read anything uncertain or in flight that hasn't been checked

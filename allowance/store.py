@@ -138,11 +138,15 @@ class Store:
     def tx(self):
         return _Tx(self)
 
+    # Reads share the one connection with other threads' transactions, so they take the same lock
+    # (a read interleaved with another thread's statements on one sqlite3 connection can come back wrong).
     def q(self, sql, *a):
-        return self.db.execute(sql, a).fetchall()
+        with self.lock:
+            return self.db.execute(sql, a).fetchall()
 
     def one(self, sql, *a):
-        return self.db.execute(sql, a).fetchone()
+        with self.lock:
+            return self.db.execute(sql, a).fetchone()
 
     def log(self, actor, kind, provenance, incident_id=None, **body):
         with self.lock:
