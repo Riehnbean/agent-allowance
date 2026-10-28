@@ -42,7 +42,7 @@ Each block is about 25 to 40 seconds. **[SCREEN]** says what to show. The narrat
 ### 7. Proof and honesty (3:40–4:15)
 **[SCREEN]** Terminal: tests passing. Then the sandbox script passing. Then COVERAGE.md.
 
-> Ninety-six automated tests, including attacks written by two separate AI reviewers. Six live scenarios against the Airwallex sandbox. And a map of a hundred twenty-eight ways payments go wrong, with how the desk handles each. To be straight with you: this is sandbox only, and it was built by AI coding agents working under my direction. I'm Zach. Thanks for watching.
+> A hundred and one automated tests, including attacks written by two separate AI reviewers. Six live scenarios against the Airwallex sandbox. And a map of a hundred twenty-eight ways payments go wrong, with how the desk handles each. To be straight with you: this is sandbox only, and it was built by AI coding agents working under my direction. I'm Zach. Thanks for watching.
 
 ---
 Word count is about 560 words, which is about 4 minutes 15 seconds at a natural pace.

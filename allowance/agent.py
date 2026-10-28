@@ -138,7 +138,10 @@ PROVIDERS = {
 }
 
 
-NICE = {"openai-fast": "GPT-OSS 20B (open-source, free)", "openai/gpt-oss-20b": "GPT-OSS 20B (open-source)",
+# Most careful last: nothing moves money on WAIT/ESCALATE; CLOSE stops watching; REPLACE sends money.
+CAUTION = {"REPLACE": 0, "CLOSE": 1, "WAIT": 2, "ESCALATE": 3}
+
+NICE = {"claude-sonnet-5-5": "Claude Sonnet 5.5 (Anthropic)", "claude-haiku-5-5": "Claude Haiku 5.5 (Anthropic)", "openai-fast": "GPT-OSS 20B (open-source, free)", "openai/gpt-oss-20b": "GPT-OSS 20B (open-source)",
         "qwen2.5-3b-instruct": "Qwen 2.5 3B (open-source, on this machine)", "qwen2.5:3b": "Qwen 2.5 3B (open-source, Ollama)"}
 
 
@@ -257,7 +260,9 @@ class LLMAgent:
         self.brains = [b for b in self.brains if b.configured]
         self.fallback = fallback or RulesAgent()
         self.budget = CLICK_BUDGET
-        self.used_llm, self.answered_by, self.prepared = False, None, False
+        # AGENT_CROSSCHECK=1: the first model's pick is checked by the next model in the chain.
+        self.crosscheck = os.environ.get("AGENT_CROSSCHECK", "").strip().lower() in ("1", "true", "yes", "on") and len(self.brains) > 1
+        self.used_llm, self.answered_by, self.prepared, self.second = False, None, False, None
 
     @property
     def configured(self):
@@ -274,7 +279,7 @@ class LLMAgent:
         return "AI: " + self.brains[0].nice + "".join(" · backup: " + b.nice for b in self.brains[1:]) + " · then rulebook"
 
     def _key(self, user):
-        return hashlib.sha256((SYSTEM_PROMPT + "|" + "|".join(b.label for b in self.brains) + "|" + user).encode()).hexdigest()
+        return hashlib.sha256((SYSTEM_PROMPT + "|" + "|".join(b.label for b in self.brains) + ("|x" if self.crosscheck else "") + "|" + user).encode()).hexdigest()
 
     def status(self, ev, allowed):
         """'ready' (answer cached), 'thinking' (being asked now) or 'idle'."""
@@ -287,11 +292,22 @@ class LLMAgent:
     def _compute(self, k, user, evt):
         errors = []
         try:
-            for b in self.brains:
+            for i, b in enumerate(self.brains):
                 try:
                     d, reasons = parse(b.ask(user))
+                    second = None
+                    if self.crosscheck:
+                        # Double check: a different model reads the same facts on its own. If it can't answer,
+                        # the rulebook still stands as the second opinion.
+                        for b2 in self.brains[i + 1:]:
+                            try:
+                                d2, r2 = parse(b2.ask(user))
+                                second = (d2, b2.label, r2[0] if r2 else "")
+                                break
+                            except Exception as e:
+                                errors.append(f"{b2.label} (double check): {type(e).__name__}")
                     with _clock:
-                        _cache[k] = (d, reasons, b.label)
+                        _cache[k] = (d, reasons, b.label, second)
                         if len(_cache) > 500:
                             _cache.pop(next(iter(_cache)))
                     return
@@ -313,7 +329,8 @@ class LLMAgent:
         with _clock:
             if k in _cache:
                 self.prepared = True
-                return _cache[k]
+                self.second = _cache[k][3]
+                return _cache[k][:3]
             evt = _inflight.get(k)
             if evt is None:
                 _errors.pop(k, None)
@@ -322,13 +339,14 @@ class LLMAgent:
         evt.wait(budget)
         with _clock:
             if k in _cache:
-                return _cache[k]
+                self.second = _cache[k][3]
+                return _cache[k][:3]
             if k in _errors:
                 raise RuntimeError(_errors[k])
         raise TimeoutError("the AI is still reading the evidence")
 
     def decide(self, ev, allowed):
-        self.used_llm, self.answered_by, self.prepared = False, None, False
+        self.used_llm, self.answered_by, self.prepared, self.second = False, None, False, None
         rules_d, rules_r = self.fallback.decide(ev, allowed)
         if not self.configured:
             return rules_d, rules_r + ["(No AI model configured - the deterministic rules agent answered.)"]
@@ -347,6 +365,15 @@ class LLMAgent:
             return "ESCALATE", reasons + ["(Bank-change wording or a safety alarm is present; replacement blocked pending human verification.)"]
         if d == "CLOSE" and any(NOT_RECEIVED.search(m or "") for m in ev["supplier_messages"]):
             return "ESCALATE", reasons + ["(Supplier says the money never arrived; a person sends them the payment confirmation before closing.)"]
+        if self.second:
+            d2, who2, why2 = self.second
+            if d2 != d:
+                # The two AIs disagree: take the most careful allowed choice of the AIs and the rulebook.
+                picks = [x for x in (d, d2, rules_d) if x in allowed]
+                safest = max(picks, key=CAUTION.get) if picks else "ESCALATE"
+                return safest, reasons + [f"(Double check: {NICE.get(who2.split(' via ')[0], who2)} chose {d2}"
+                                          + (f" - {why2[:120]}" if why2 else "") + f". The AIs disagree, so the desk takes the most careful choice: {safest}.)"]
+            reasons = reasons + [f"(Double check: {NICE.get(who2.split(' via ')[0], who2)} independently agrees: {d2}.)"]
         if d != rules_d:
             reasons = reasons + [f"(Second opinion: the rulebook would have chosen {rules_d}. Both are allowed; a person decides.)"]
         return d, reasons

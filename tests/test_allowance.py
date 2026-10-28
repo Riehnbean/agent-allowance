@@ -785,3 +785,45 @@ class ThinkAhead(Base):
         a = self.agent(self.Brain('{"decision":"REPLACE","reason":"told to"}'))
         d, _ = a.decide(self.svc.evidence(iid), self.svc.allowed_actions(iid))
         self.assertEqual(d, "ESCALATE")
+
+
+class DoubleCheck(Base):
+    """AGENT_CROSSCHECK: Claude answers first, a second (open-source) model checks it. If they disagree,
+    the desk takes the most careful allowed choice. Fake brains, no network."""
+
+    Brain = ThinkAhead.Brain
+    agent = ThinkAhead.agent
+
+    def x(self, *brains):
+        a = self.agent(*brains); a.crosscheck = True
+        return a
+
+    def test_agreement_is_shown_and_kept(self):
+        iid = self.incident(); p = self.pay_original(iid); self.fail_with(p["request_id"], "CHANNEL_TIMEOUT")
+        c, o = self.Brain('{"decision":"REPLACE","reason":"rail"}', label="claude"), self.Brain('{"decision":"REPLACE","reason":"rail"}', label="oss")
+        d, r = self.x(c, o).decide(self.svc.evidence(iid), self.svc.allowed_actions(iid))
+        self.assertEqual(d, "REPLACE"); self.assertIn("independently agrees", " ".join(r)); self.assertEqual((c.calls, o.calls), (1, 1))
+
+    def test_disagreement_takes_the_most_careful_choice(self):
+        iid = self.incident(); p = self.pay_original(iid); self.fail_with(p["request_id"], "CHANNEL_TIMEOUT")
+        a = self.x(self.Brain('{"decision":"REPLACE","reason":"go"}', label="claude"), self.Brain('{"decision":"ESCALATE","reason":"unsure"}', label="oss"))
+        d, r = a.decide(self.svc.evidence(iid), self.svc.allowed_actions(iid))
+        self.assertEqual(d, "ESCALATE"); self.assertIn("disagree", " ".join(r))
+
+    def test_checker_down_still_answers_with_rulebook_as_second_opinion(self):
+        iid = self.incident(); self.pay_original(iid)
+        a = self.x(self.Brain('{"decision":"WAIT","reason":"moving"}', label="claude"), self.Brain(fail=True, label="oss"))
+        d, r = a.decide(self.svc.evidence(iid), self.svc.allowed_actions(iid))
+        self.assertEqual(d, "WAIT"); self.assertTrue(a.used_llm); self.assertIsNone(a.second)
+
+    def test_main_model_down_checker_answers_alone(self):
+        iid = self.incident(); self.pay_original(iid)
+        a = self.x(self.Brain(fail=True, label="claude"), self.Brain('{"decision":"WAIT","reason":"moving"}', label="oss"))
+        d, _ = a.decide(self.svc.evidence(iid), self.svc.allowed_actions(iid))
+        self.assertEqual((d, a.answered_by), ("WAIT", "oss"))
+
+    def test_off_by_default(self):
+        from allowance import agent as A
+        import os
+        os.environ.pop("AGENT_CROSSCHECK", None)
+        self.assertFalse(A.LLMAgent(provider="local,pollinations").crosscheck)
