@@ -35,15 +35,15 @@ The model never touches money. Code first works out which actions are allowed. T
 
 Every step goes into an append-only, hash-chained evidence log. Each incident exports a receipt that labels every line by source: *observed* (read back from Airwallex), *decided* (code), *model* (AI opinion), *operator* (a person) or *untrusted* (supplier text).
 
-## Open-source AI, no paid API
-The agent's brain is free and open-weights:
-1. GPT-OSS 20B through a free hosted endpoint, with no signup.
-2. If that's unavailable, Qwen2.5-3B running locally (llama.cpp).
-3. If both are unavailable, a deterministic rulebook.
+## Two AIs and a rulebook
+The demo desk runs this chain:
+1. **Claude** (Sonnet 5.5, using the hackathon's Claude API credits) recommends an action.
+2. **A second, open-source AI checks it.** That's GPT-OSS 20B through a free hosted endpoint, or Qwen2.5-3B running on the machine. If the two AIs disagree, the desk takes the most careful allowed choice (ESCALATE, then WAIT, then CLOSE, then REPLACE) and shows both answers.
+3. If no AI answers, a deterministic rulebook does.
 
-Account numbers, IBANs and emails are removed from supplier text before *any* model sees it. Because the code limits what the agent may do, a weaker or tricked model can't create an unsafe action. It can only pick a worse *safe* one, and the operator sees which brain answered.
+The desk also runs with **no paid API at all**: open-source models only, then the rulebook. That's one setting.
 
-**Double check (optional):** Claude can answer first, with an open-source model checking each pick on its own. If the two AIs disagree, the desk takes the most careful allowed choice and shows both answers. Payments are already protected by code and human approval, so this only makes the *advice* safer.
+Account numbers, IBANs and emails are removed from supplier text before *any* model sees it. The code limits what the agent may do, so a weaker or tricked model can't create an unsafe action. It can only pick a worse *safe* one, and the operator sees which brain answered. Payments are already protected by code and human approval, so the double check only makes the *advice* safer.
 
 So the operator never waits on the model, the desk asks the AI as soon as an incident changes ("think-ahead"). A click returns within 4 seconds, and if the model isn't done, the rulebook answers.
 
@@ -58,7 +58,7 @@ Things we checked by probing the sandbox:
 ## Evidence
 - **101 automated tests, no network.** They include two red-team suites written by independent AI reviewers: 20 attack tests, plus 9 holes found on Oct 27, each shipped as a failing test and then fixed.
 - **`scripts/sandbox_e2e.py`** runs 6 scenarios against the live Airwallex sandbox: normal pay, lost reply, channel-timeout replacement, closed account, payee edited in Airwallex, and same-payee totals needing a co-signer. All 6 pass.
-- **`scripts/llm_eval.py`** runs the real model on 9 tricky incidents, including a scam email and a prompt-injection attempt, and compares it to the rulebook. The small offline backup (Qwen2.5-3B on a 2-core CPU) picked the right action on 7 of 9, including the scam and the prompt injection. Both misses were *more cautious* than needed (ESCALATE instead of REPLACE, WAIT instead of ESCALATE), so no money moved. That is the point of the design: a weak model costs time, never money.
+- **`scripts/llm_eval.py`** runs the real models on 9 tricky incidents, including a scam email and a prompt-injection attempt. Claude (Sonnet 5.5, via the hackathon's Claude API credits) got 9/9 in about 2 seconds each. With the open-source GPT-OSS 20B double-checking every answer, it was still 9/9 at about 5.6 seconds per decision. The small offline backup (Qwen2.5-3B on a 2-core CPU) got 7/9 on its own, and both of its misses were the cautious choice, so no money moved. A weak or tricked model costs time, never money.
 - **`COVERAGE.md`** maps 128 researched payment failure routes to how the desk handles each: 95 built and tested, 19 partial, 14 out of scope with reasons. Sources include Airwallex docs, Nacha, FBI IC3, idempotency guidance and the OWASP LLM Top 10.
 
 ## Honest scope
