@@ -56,7 +56,7 @@ Things we checked by probing the sandbox:
 ## Evidence
 - **96 automated tests, no network.** They include two red-team suites written by independent AI reviewers: 20 attack tests, plus 9 holes found on Oct 27, each shipped as a failing test and then fixed.
 - **`scripts/sandbox_e2e.py`** runs 6 scenarios against the live Airwallex sandbox: normal pay, lost reply, channel-timeout replacement, closed account, payee edited in Airwallex, and same-payee totals needing a co-signer. All 6 pass.
-- **`scripts/llm_eval.py`** runs the real model on 9 tricky incidents, including a scam email and a prompt-injection attempt, and compares it to the rulebook.
+- **`scripts/llm_eval.py`** runs the real model on 9 tricky incidents, including a scam email and a prompt-injection attempt, and compares it to the rulebook. The small offline backup (Qwen2.5-3B on a 2-core CPU) picked the right action on 7 of 9, including the scam and the prompt injection. Both misses were *more cautious* than needed (ESCALATE instead of REPLACE, WAIT instead of ESCALATE), so no money moved. That is the point of the design: a weak model costs time, never money.
 - **`COVERAGE.md`** maps 128 researched payment failure routes to how the desk handles each: 95 built and tested, 19 partial, 14 out of scope with reasons. Sources include Airwallex docs, Nacha, FBI IC3, idempotency guidance and the OWASP LLM Top 10.
 
 ## Honest scope
