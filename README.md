@@ -50,7 +50,7 @@ export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (n
 # open-source model checks it independently. If they disagree, the desk takes the most careful allowed choice
 # (ESCALATE > WAIT > CLOSE > REPLACE) and says so. Either way the AI only recommends - it has no tool that moves money.
 # Think-ahead: the desk asks the AI as soon as an incident changes, so the operator's click is instant;
-# a click never waits more than AGENT_CLICK_BUDGET (default 4s) - if the AI isn't done, the rulebook answers.
+# a click never waits more than AGENT_CLICK_BUDGET (default 6s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
 python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review  # 101 tests, no network (incl. two independent reviewer suites)

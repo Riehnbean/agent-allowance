@@ -45,7 +45,7 @@ The desk also runs with **no paid API at all**: open-source models only, then th
 
 Account numbers, IBANs and emails are removed from supplier text before *any* model sees it. The code limits what the agent may do, so a weaker or tricked model can't create an unsafe action. It can only pick a worse *safe* one, and the operator sees which brain answered. Payments are already protected by code and human approval, so the double check only makes the *advice* safer.
 
-So the operator never waits on the model, the desk asks the AI as soon as an incident changes ("think-ahead"). A click returns within 4 seconds, and if the model isn't done, the rulebook answers.
+So the operator never waits on the model, the desk asks the AI as soon as an incident changes ("think-ahead"). A click returns within 6 seconds (the two AIs think in parallel, usually 3–4 seconds), and if they are not done, the rulebook answers.
 
 ## Airwallex APIs used (sandbox)
 `POST /authentication/login` · `POST /beneficiaries/create` · `POST /transfers/create` · `GET /transfers/{id}` · `GET /transfers?request_id=` · `GET /balances/current` · `POST /simulation/transfers/{id}/transition` · `POST /simulation/deposit/create`

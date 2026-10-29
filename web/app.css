@@ -49,3 +49,8 @@ button.primary:disabled{background:#2a333b;border-color:#3a4652;color:#8796a4}
 .pendingbar{background:#1d2633;border-bottom:1px solid #3d5466;padding:8px 18px;display:grid;gap:6px}.pend{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.pend small{color:var(--mute)}
 .agtop{gap:10px}.aitag{font-size:12px;border-radius:10px;padding:2px 9px;margin-left:auto;margin-right:8px}.ai-ready{color:#9ff0c4;background:#1f4d34}.ai-think{color:#d6c4ff;background:#2b2244;animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.55}}
+/* The status message never blocks taps (it used to sit invisibly over the buttons near the bottom). */
+.toast{pointer-events:none}
+/* Phones: the tall header no longer sticks over the page and hides buttons while scrolling; buttons scroll clear of it. */
+@media (max-width:700px){.top{position:static}}
+html{scroll-padding-top:90px}@media (max-width:700px){html{scroll-padding-top:12px}}

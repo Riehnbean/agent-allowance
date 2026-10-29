@@ -26,7 +26,7 @@ Each block is about 25 to 40 seconds. **[SCREEN]** says what to show. The narrat
 **[SCREEN]** Simulator: fail with CHANNEL_TIMEOUT. Ask the agent and show REPLACE. Try "Send $1 more than approved" and show the refusal.
 
 > Now the bank fails the transfer with a channel timeout. That's a safe reason to retry, and the desk checks it live with Airwallex at the moment I replace it. The agent says replace. If I try to sneak in one extra dollar, it's refused. The approval is locked to the exact payee, amount and bank details I signed off on.
-**[SCREEN]** Approve and send the replacement. SENT, then PAID. Agent says CLOSE. Close, then download the receipt.
+**[SCREEN]** Click "Send replacement". The approval from the $1 test is still valid, because it is locked to the exact approved terms. Then SENT, then PAID. The agent says CLOSE. Close the incident and download the receipt.
 > The replacement goes through and gets paid. The agent says close, and I get a receipt showing the original cancelled and the replacement paid. Every line says where it came from: Airwallex, the code, the AI, or a person.
 
 ### 5. Lost reply (2:20–2:55)

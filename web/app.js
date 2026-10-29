@@ -19,8 +19,16 @@ async function act(path, body, ok) {
   catch (e) { toast(e.message, true); await load().catch(() => {}); }
 }
 
-async function load() {
-  S = await api("/api/state");
+// The 3-second refresh only rebuilds the screen when something actually changed, and never while a finger or mouse
+// button is down - rebuilding mid-click used to swallow clicks.
+let lastSig = "", pressing = false;
+for (const t of ["pointerdown"]) document.addEventListener(t, () => { pressing = true; }, true);
+for (const t of ["pointerup", "pointercancel"]) document.addEventListener(t, () => setTimeout(() => { pressing = false; }, 250), true);
+async function load(quiet) {
+  const next = await api("/api/state");
+  const sig = JSON.stringify(next);
+  if (quiet && (sig === lastSig || pressing)) return;
+  lastSig = sig; S = next;
   $("#gate").hidden = true;
   const p = S.policy;
   $("#budget").textContent = `Today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} committed · max ${usd(p.per_tx_cap)} per payment`;
@@ -170,4 +178,4 @@ $("#kill").onclick = () => {
 $("#resumeform").onsubmit = e => { e.preventDefault(); act("/api/unkill", { note: $("#resumenote").value }, r => r.pending ? `Resume request #${r.pending} needs a second person` : "Payments resumed"); $("#resume").hidden = true; };
 $("#gateform").onsubmit = e => { e.preventDefault(); token = $("#tok").value; try { sessionStorage.setItem("op-token", token); } catch {} load().catch(err => toast(err.message, true)); };
 load().catch(() => { $("#gate").hidden = false; });
-setInterval(() => { if (!document.hidden && token && !document.querySelector("input:focus,textarea:focus")) load().catch(() => {}); }, 3000);
+setInterval(() => { if (!document.hidden && token && !document.querySelector("input:focus,textarea:focus")) load(true).catch(() => {}); }, 3000);

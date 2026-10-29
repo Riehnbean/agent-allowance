@@ -237,7 +237,7 @@ def parse(text):
 # Think-ahead cache: the desk asks the model as soon as an incident changes, so the operator's click is instant.
 # Keyed by exactly what the model sees, so a cached answer can never be about a different situation.
 _cache, _inflight, _errors, _clock = {}, {}, {}, threading.Lock()
-CLICK_BUDGET = float(os.environ.get("AGENT_CLICK_BUDGET", "4"))  # max seconds an operator waits for the AI
+CLICK_BUDGET = float(os.environ.get("AGENT_CLICK_BUDGET", "6"))  # max seconds an operator waits for the AI
 
 
 class LLMAgent:
@@ -292,20 +292,27 @@ class LLMAgent:
     def _compute(self, k, user, evt):
         errors = []
         try:
+            # Double check: the second model starts at the same time as the first (in parallel), so checking
+            # costs no extra waiting. It reads the same facts on its own; if it can't answer, the rulebook stands.
+            checks = {}
+            def run_check(start):
+                for b2 in self.brains[start:]:
+                    try:
+                        d2, r2 = parse(b2.ask(user))
+                        checks[start] = (d2, b2.label, r2[0] if r2 else "")
+                        return
+                    except Exception as e:
+                        errors.append(f"{b2.label} (double check): {type(e).__name__}")
             for i, b in enumerate(self.brains):
+                th = None
+                if self.crosscheck and i + 1 < len(self.brains):
+                    th = threading.Thread(target=run_check, args=(i + 1,), daemon=True); th.start()
                 try:
                     d, reasons = parse(b.ask(user))
                     second = None
-                    if self.crosscheck:
-                        # Double check: a different model reads the same facts on its own. If it can't answer,
-                        # the rulebook still stands as the second opinion.
-                        for b2 in self.brains[i + 1:]:
-                            try:
-                                d2, r2 = parse(b2.ask(user))
-                                second = (d2, b2.label, r2[0] if r2 else "")
-                                break
-                            except Exception as e:
-                                errors.append(f"{b2.label} (double check): {type(e).__name__}")
+                    if th:
+                        th.join(b.timeout)
+                        second = checks.get(i + 1)
                     with _clock:
                         _cache[k] = (d, reasons, b.label, second)
                         if len(_cache) > 500:
