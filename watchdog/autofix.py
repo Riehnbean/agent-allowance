@@ -203,7 +203,7 @@ def rollback_if_broken():
         subprocess.run(["git", "-c", "user.name=Watchdog", "-c", "user.email=watchdog@agent-allowance.local", "revert", "--no-edit", "HEAD"], cwd=ROOT)
         log(event="rollback", result="suite failed at HEAD; last Watchdog fix reverted", detail=msg)
         return True
-    log(event="suite_red_not_ours", result="suite failed at HEAD; last commit is not a Watchdog fix - desk stays stopped", detail=msg)
+    log(event="open_bug_before_cycle", result="tests were already failing when this cycle started (an open bug, not a Watchdog fix) - nothing reverted; repair runs next and payments stay stopped until it passes", detail=msg)
     return False
 
 
