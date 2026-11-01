@@ -1,0 +1,29 @@
+commit e540c3df13362fa6d6fa9bdd8ce7e7a19c64a5b8
+Author: Watchdog <watchdog@agent-allowance.local>
+Date:   Sun Nov 1 12:22:58 2026 -0600
+
+    watchdog autofix: UNTRACKED_MONEY
+    
+    sweep() never re-read payments the desk had marked CANCELLED, so a transfer that Airwallex later paid stayed 'CANCELLED' with no alarm. Add the cancelled-payment re-read that cancel_watch was meant for: recent CANCELLED payments are re-read read-only, and _set then raises CANCELLED_THEN_PAID / CANCELLED_BUT_LIVE / CANCELLED_LOCALLY_BUT_EXISTS and freezes the incident.
+    
+    Gates: {"G1_G2": "G1/G2 ok", "G3_tests": "pass (no test that passed before fails now)", "G4_replays": "pass (UNTRACKED_MONEY-1448168a.json fixed; open findings 3 -> 0)", "G5_hunt": "pass (300 fresh scenarios, no new kind of break)", "G6_second_opinion": "APPROVE: The diff only adds a loop that calls the existing `reconcile()` on recent CANCELLED payments, the same pattern the PAID loop already uses, and it adds no new send, retry, or cap path. It cannot weaken an existing refusal or alarm. This assumes `reconcile()` is read-only for CANCELLED rows a"}
+
+diff --git a/allowance/service.py b/allowance/service.py
+index 0edbf49..575fbf7 100644
+--- a/allowance/service.py
++++ b/allowance/service.py
+@@ -820,6 +820,14 @@ class Service:
+                 if inc["alert"] != "OVERDUE_SLA":
+                     self.s.log("policy", "sla_breached", "decided", p["incident_id"], request_id=p["request_id"], hours=int((self.now() - p["created_at"]) / 3600))
+                     self._alert(p["incident_id"], "OVERDUE_SLA")
++        # CANCELLED is not proof either: Airwallex can still move a cancelled transfer. Keep re-reading recent ones;
++        # _set() raises an alarm if one turns out to be live or paid.
++        for p in self.s.q("SELECT * FROM payments WHERE status='CANCELLED' AND created_at>?", self.now() - cancel_watch):
++            if self.now() - (p["checked_at"] or p["updated_at"]) >= stale_after:
++                try:
++                    out.append(self.reconcile(p["request_id"]))
++                except Exception as e:
++                    self.s.log("system", "sweep_error", "decided", p["incident_id"], request_id=p["request_id"], error=str(e)[:200])
+         # PAID is provisional: Airwallex can still move it to FAILED. Keep re-reading for a few days.
+         for p in self.s.q("SELECT * FROM payments WHERE status='PAID' AND created_at>?", self.now() - paid_watch):
+             if self.now() - (p["checked_at"] or p["updated_at"]) >= (3600 if self.now() - p["created_at"] < 86400 else 6 * 3600):

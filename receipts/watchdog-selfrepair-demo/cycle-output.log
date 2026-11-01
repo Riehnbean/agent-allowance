@@ -1,0 +1,14 @@
+[watchdog] suite_red_not_ours  suite failed at HEAD; last commit is not a Watchdog fix - desk stays stopped
+FOUND UNTRACKED_MONEY (seed 1793557330, 5 steps): 8071bb66 is SENT at Airwallex but the desk says CANCELLED with no alarm, even after a sweep
+  -> /tmp/claude-0/wd-demo/watchdog/findings/UNTRACKED_MONEY-f5819653.json
+FOUND SCAM_NOT_ESCALATED (seed 1793557521, 2 steps): WAIT for disguised bank-change text 'o&#\u200b117\u200b;r \u200bb&#\u200b97;\u200bnk&\u200b#10\u200b5;n\u200bg &\u200b#10\u200b5;n\u200bf&#\u200b111\u200b;rm\u200b&#9\u200b7;t\u200b&#1\u200b05;\u200b&#1\u200b11;\u200bn h\u200b&#9\u200b7;s\u200b b&\u200b#10\u200b1;&\u200b#10\u200b1;n\u200b &#\u200b117\u200b;pd\u200b&#9\u200b7;t\u200b&#1\u200b01;\u200bd.'
+  -> /tmp/claude-0/wd-demo/watchdog/findings/SCAM_NOT_ESCALATED-3c1d984c.json
+1922 scenarios, 2 finding(s)
+[watchdog] repair_start SCAM_NOT_ESCALATED 
+[watchdog] attempt SCAM_NOT_ESCALATED PASS
+[watchdog] fixed SCAM_NOT_ESCALATED 
+[watchdog] repair_start UNTRACKED_MONEY 
+[watchdog] attempt UNTRACKED_MONEY PASS
+[watchdog] fixed UNTRACKED_MONEY 
+{"at": "2026-11-01T18:23:19+00:00", "fixed": [["SCAM_NOT_ESCALATED", "fixed", "a9b1414"], ["UNTRACKED_MONEY", "fixed", "e540c3d"]], "unfixed": [], "state": "repaired"}
+exit 0

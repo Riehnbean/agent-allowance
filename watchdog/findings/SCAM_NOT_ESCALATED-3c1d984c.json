@@ -1,0 +1,36 @@
+{
+ "rule": "SCAM_NOT_ESCALATED",
+ "seed": 1793557521,
+ "detail": "WAIT for disguised bank-change text 'o&#\\u200b117\\u200b;r \\u200bb&#\\u200b97;\\u200bnk&\\u200b#10\\u200b5;n\\u200bg &\\u200b#10\\u200b5;n\\u200bf&#\\u200b111\\u200b;rm\\u200b&#9\\u200b7;t\\u200b&#1\\u200b05;\\u200b&#1\\u200b11;\\u200bn h\\u200b&#9\\u200b7;s\\u200b b&\\u200b#10\\u200b1;&\\u200b#10\\u200b1;n\\u200b &#\\u200b117\\u200b;pd\\u200b&#9\\u200b7;t\\u200b&#1\\u200b01;\\u200bd.'",
+ "steps": [
+  [
+   "open",
+   10000
+  ],
+  [
+   "race",
+   [
+    "scam",
+    0,
+    158473
+   ],
+   [
+    "pay_orig",
+    3,
+    0
+   ]
+  ]
+ ],
+ "found_at": "2026-11-01T18:20:38+00:00",
+ "status": "fixed",
+ "replay": "python3 -m watchdog.replay watchdog/findings/SCAM_NOT_ESCALATED-3c1d984c.json",
+ "fixed_at": "2026-11-01T18:22:10+00:00",
+ "fix": "normalize() unescaped HTML entities before removing zero-width characters, so entities split by zero-width characters (e.g. '&#\\u200b117\\u200b;') never decoded and the bank-change wording stayed hidden. Strip invisible characters before unescaping as well, so the text is read as 'our banking information has been updated' and escalated.",
+ "gates": {
+  "G1_G2": "G1/G2 ok",
+  "G3_tests": "pass (no test that passed before fails now)",
+  "G4_replays": "pass (SCAM_NOT_ESCALATED-3c1d984c.json fixed; open findings 4 -> 3)",
+  "G5_hunt": "pass (300 fresh scenarios, no new kind of break)",
+  "G6_second_opinion": "APPROVE: The change only strips zero-width characters before the existing HTML unescape, so text is normalized more fully and more wording becomes visible to the escalation check. It adds no payment path, cap, payee logic, or lock, and the .pyc changes are only build cache. This assumes `_INVISIBLE`"
+ }
+}

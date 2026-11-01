@@ -1,0 +1,17 @@
+{
+ "at": "2026-11-01T18:23:19+00:00",
+ "fixed": [
+  [
+   "SCAM_NOT_ESCALATED",
+   "fixed",
+   "a9b1414"
+  ],
+  [
+   "UNTRACKED_MONEY",
+   "fixed",
+   "e540c3d"
+  ]
+ ],
+ "unfixed": [],
+ "state": "repaired"
+}

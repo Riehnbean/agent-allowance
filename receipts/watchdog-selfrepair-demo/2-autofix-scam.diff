@@ -1,0 +1,22 @@
+commit a9b14146a3ddb84a074794ac79857b6eb499e6b9
+Author: Watchdog <watchdog@agent-allowance.local>
+Date:   Sun Nov 1 12:22:10 2026 -0600
+
+    watchdog autofix: SCAM_NOT_ESCALATED
+    
+    normalize() unescaped HTML entities before removing zero-width characters, so entities split by zero-width characters (e.g. '&#\u200b117\u200b;') never decoded and the bank-change wording stayed hidden. Strip invisible characters before unescaping as well, so the text is read as 'our banking information has been updated' and escalated.
+    
+    Gates: {"G1_G2": "G1/G2 ok", "G3_tests": "pass (no test that passed before fails now)", "G4_replays": "pass (SCAM_NOT_ESCALATED-3c1d984c.json fixed; open findings 4 -> 3)", "G5_hunt": "pass (300 fresh scenarios, no new kind of break)", "G6_second_opinion": "APPROVE: The change only strips zero-width characters before the existing HTML unescape, so text is normalized more fully and more wording becomes visible to the escalation check. It adds no payment path, cap, payee logic, or lock, and the .pyc changes are only build cache. This assumes `_INVISIBLE`"}
+
+diff --git a/allowance/agent.py b/allowance/agent.py
+index 4fde1e2..25fe3a1 100644
+--- a/allowance/agent.py
++++ b/allowance/agent.py
+@@ -65,6 +65,7 @@ def normalize(text):
+     import unicodedata
+     t = text or ""
+     t = unicodedata.normalize("NFKC", t)  # full-width digits first, so &#１０１; becomes a real entity
++    t = _INVISIBLE.sub("", t)  # zero-width characters can split an entity (&#\u200b117;) - remove before unescaping
+     for _ in range(2):  # double-encoded entities (&amp;#101;) too
+         t = html.unescape(t)
+     t = unicodedata.normalize("NFKC", t)

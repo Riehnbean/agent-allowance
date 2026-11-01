@@ -1,5 +1,4 @@
-.env
+__pycache__/
+*.pyc
 *.db
 *.db-*
-__pycache__/
-run*/

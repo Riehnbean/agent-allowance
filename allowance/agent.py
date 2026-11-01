@@ -65,6 +65,7 @@ def normalize(text):
     import unicodedata
     t = text or ""
     t = unicodedata.normalize("NFKC", t)  # full-width digits first, so &#１０１; becomes a real entity
+    t = _INVISIBLE.sub("", t)  # zero-width characters can split an entity (&#\u200b117;) - remove before unescaping (Watchdog autofix a9b1414)
     for _ in range(2):  # double-encoded entities (&amp;#101;) too
         t = html.unescape(t)
     t = unicodedata.normalize("NFKC", t)

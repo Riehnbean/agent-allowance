@@ -1,0 +1,25 @@
+commit 684b2bff264fccfe895270b0946f5985bb6164d7
+Author: demo <d@d>
+Date:   Sun Nov 1 12:20:16 2026 -0600
+
+    DEMO: simulated regression - sweeper stops re-reading cancelled payments
+
+diff --git a/allowance/service.py b/allowance/service.py
+index 97b2bd3..0edbf49 100644
+--- a/allowance/service.py
++++ b/allowance/service.py
+@@ -820,14 +820,6 @@ class Service:
+                 if inc["alert"] != "OVERDUE_SLA":
+                     self.s.log("policy", "sla_breached", "decided", p["incident_id"], request_id=p["request_id"], hours=int((self.now() - p["created_at"]) / 3600))
+                     self._alert(p["incident_id"], "OVERDUE_SLA")
+-        # CANCELLED is not proof either: a "cancelled" transfer can still pay out, and a payment we released
+-        # locally can turn up at Airwallex after all. Keep re-reading recent ones (found by the Watchdog).
+-        for p in self.s.q("SELECT * FROM payments WHERE status='CANCELLED' AND updated_at>?", self.now() - cancel_watch):
+-            if self.now() - (p["checked_at"] or p["updated_at"]) >= min(stale_after, 3600):
+-                try:
+-                    out.append(self.reconcile(p["request_id"]))
+-                except Exception as e:
+-                    self.s.log("system", "sweep_error", "decided", p["incident_id"], request_id=p["request_id"], error=str(e)[:200])
+         # PAID is provisional: Airwallex can still move it to FAILED. Keep re-reading for a few days.
+         for p in self.s.q("SELECT * FROM payments WHERE status='PAID' AND created_at>?", self.now() - paid_watch):
+             if self.now() - (p["checked_at"] or p["updated_at"]) >= (3600 if self.now() - p["created_at"] < 86400 else 6 * 3600):

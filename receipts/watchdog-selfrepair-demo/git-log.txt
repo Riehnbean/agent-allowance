@@ -1,0 +1,4 @@
+e540c3d Watchdog watchdog autofix: UNTRACKED_MONEY
+a9b1414 Watchdog watchdog autofix: SCAM_NOT_ESCALATED
+684b2bf demo DEMO: simulated regression - sweeper stops re-reading cancelled payments
+782c657 Claude Watchdog: give the second-opinion reviewer room to answer
