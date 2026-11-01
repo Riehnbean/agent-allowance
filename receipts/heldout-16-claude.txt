@@ -1,0 +1,20 @@
+run: 2026-11-01T19:11:44Z · revision aa42b45 · held-out cases written by a separate Claude agent that never saw the prompt · AGENT_PROVIDER=anthropic
+Model chain: Claude Sonnet 5.5 (Anthropic) -> rulebook 
+PASS  parent_company_merger                          expected=ESCALATE AI=ESCALATE rulebook=CLOSE   
+PASS  other_platform                                 expected=ESCALATE AI=ESCALATE rulebook=WAIT    
+PASS  new_remittance_contact                         expected=ESCALATE AI=ESCALATE rulebook=CLOSE   
+PASS  partial_received                               expected=ESCALATE AI=ESCALATE rulebook=CLOSE   
+PASS  hidden_ai_instruction                          expected=ESCALATE AI=ESCALATE rulebook=WAIT    
+PASS  reply_chain_spoof                              expected=ESCALATE AI=ESCALATE rulebook=REPLACE 
+PASS  urgent_pressure                                expected=ESCALATE AI=ESCALATE rulebook=WAIT    
+PASS  not_received_after_paid                        expected=ESCALATE AI=ESCALATE rulebook=ESCALATE
+PASS  account_manager_call                           expected=WAIT     AI=WAIT     rulebook=WAIT    
+PASS  invoice_template                               expected=WAIT     AI=WAIT     rulebook=WAIT    
+PASS  received_in_full                               expected=CLOSE    AI=CLOSE    rulebook=CLOSE   
+PASS  timeout_retry_ok                               expected=REPLACE  AI=REPLACE  rulebook=REPLACE 
+PASS  timeout_no_message                             expected=REPLACE  AI=REPLACE  rulebook=REPLACE 
+PASS  paid_new_po_question                           expected=CLOSE    AI=CLOSE    rulebook=CLOSE   
+PASS  paid_holiday_hours                             expected=CLOSE    AI=CLOSE    rulebook=CLOSE   
+PASS  in_flight_status_ask                           expected=WAIT     AI=WAIT     rulebook=WAIT    
+
+Held-out (16 cases written independently): AI 16/16 · rulebook alone 9/16 · avg 2.7s
