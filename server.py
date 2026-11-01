@@ -81,8 +81,10 @@ def state():
         aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
         # Same rule the service enforces: co-sign is needed over the threshold for ONE payment, or for this payee's 24h total.
         pol0 = s.policy()
-        day_to_payee = s.one("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE beneficiary_id=? AND status<>'CANCELLED' AND created_at>?",
-                             i["beneficiary_id"], time.time() - 86400)["s"]
+        day_to_payee = s.one(
+            "SELECT COALESCE(SUM(p.amount),0) s FROM payments p WHERE p.status<>'CANCELLED' AND p.created_at>? AND p.beneficiary_id IN "
+            "(SELECT id FROM beneficiaries WHERE account_key=(SELECT account_key FROM beneficiaries WHERE id=?) UNION SELECT ?)",
+            time.time() - 86400, i["beneficiary_id"], i["beneficiary_id"])["s"]
         for a in aps:
             a["needs_cosign"] = a["amount"] > pol0["dual_approval_over"] or day_to_payee + a["amount"] > pol0["dual_approval_over"]
         last = s.one("SELECT body,at,provenance FROM events WHERE incident_id=? AND kind='decision' ORDER BY id DESC LIMIT 1", i["id"])
@@ -117,11 +119,13 @@ def ensure_beneficiary(op="operator"):
     return r["id"]
 
 
-def reverify(requested_by, note):
+def reverify(requested_by, note, details=None):
+    """details: the exact record both people checked (two-person path) - never re-read here, so an edit
+    landing between the confirm-time check and this save cannot slip in."""
     if not note or len(note.strip()) < 15:
         raise Refused("write what you checked (at least a sentence)")
     ben = ensure_beneficiary()
-    cur = API.get_beneficiary(ben)
+    cur = details if details is not None else API.get_beneficiary(ben)
     bd = cur["beneficiary"]["bank_details"]
     SVC.allow_beneficiary(ben, "Maple Lumber Supply LLC", f"acct ****{bd['account_number'][-4:]} · ABA {bd.get('account_routing_value1')}",
                           requested_by, details=cur, override_reason=note)
@@ -158,7 +162,7 @@ def handle(method, path, body, op="operator"):
             # The desk stopped itself (payee edited, unknown transfers...). Two people resume it.
             # Bound to THIS stop: if the desk stops again for a different reason, the request no longer applies.
             return {"pending": SVC.request_action("unkill", "desk|" + _short(pol["killed_reason"]), body.get("note"), op)}
-        SVC.unkill(op)
+        SVC.unkill(op, single_operator_mode=len(OPERATORS) <= 1)
         return {}
     if len(p) == 4 and p[1] == "pending" and p[3] == "confirm":
         pend = SVC.s.one("SELECT * FROM pending_actions WHERE id=?", int(p[2]))
@@ -166,7 +170,8 @@ def handle(method, path, body, op="operator"):
             # Check the request still describes the world BEFORE consuming it.
             if pend["kind"] == "reverify":
                 ben, _, want = pend["target"].partition("|")
-                if not want or details_hash(API.get_beneficiary(ben)) != want:
+                checked = API.get_beneficiary(ben)
+                if not want or details_hash(checked) != want:
                     raise Refused("the payee's bank details at Airwallex changed after this request was made - "
                                   "the request no longer matches what was checked; ask again")
             if pend["kind"] == "unkill":
@@ -175,9 +180,9 @@ def handle(method, path, body, op="operator"):
                     raise Refused("the desk stopped again for a different reason since this request - ask again")
         a = SVC.confirm_action(int(p[2]), op)
         if a["kind"] == "unkill":
-            SVC.unkill(f"{a['requested_by']}+{op}")
+            SVC.unkill(a["requested_by"], confirmed_by=op)
         elif a["kind"] == "reverify":
-            reverify(a["requested_by"], f"{a['note']} (confirmed by {op})")
+            reverify(a["requested_by"], f"{a['note']} (confirmed by {op})", details=checked)
         elif a["kind"] == "reopen":
             SVC.reopen(int(a["target"]), f"{a['requested_by']}+{op}", a["note"])
         return {"done": a["kind"]}

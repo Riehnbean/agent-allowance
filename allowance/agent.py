@@ -33,7 +33,10 @@ REDIRECT_PATTERNS = re.compile(
 )
 
 
-NOT_RECEIVED = re.compile(r"(not|never|haven'?t|didn'?t|did not)\s+(been\s+)?(receiv|got|get|arriv|see)", re.I)
+NOT_RECEIVED = re.compile(
+    r"(not|never|haven'?t|didn'?t|did not)\s+(been\s+)?(receiv|got|get|arriv|see)|still\s+(waiting|missing|unpaid|outstanding|not\b)|"
+    r"nothing\s+(has\s+)?(shown|arrived|come|landed|hit)|no\s+(funds|money|payment|transfer)s?\s+(has\s+|have\s+)?(arriv|land|show|come|receiv|hit)|"
+    r"\bunpaid\b|(payment|money|funds|transfer)\s+(is\s+|are\s+)?(still\s+)?missing|missing\s+(payment|funds|money)", re.I)
 
 
 def service_refused(msg):
@@ -98,6 +101,13 @@ DESTINATION_PATTERNS = re.compile(
 )
 
 
+BANK_CHANGE = re.compile(
+    r"\b(switch\w*|chang\w*|updat\w*|moved?|new|different|other|another|alternate|alternative)\b(?:\s+\w+){0,2}?\s+(bank\w*|account|routing|iban|swift|remittance\s+details|payment\s+details)\b|"
+    r"\b(bank\w*|account|routing|iban|swift|payment\s+details)\b[^.?!]{0,40}?\b(chang\w*|updat\w*|switch\w*|moved)\b|"
+    r"\b(route|send|direct|go|pay|remit|wire|transfer|deposit)\w*\b[^.?!]{0,40}?\b(to|into)\b[^.?!]{0,25}?\b(account|bank)\b[^.?!]{0,25}?\b(ending|instead|from now on)\b",
+    re.I)
+
+
 def fraud_signals(messages):
     hits = []
     for m in messages or []:
@@ -108,6 +118,8 @@ def fraud_signals(messages):
             for g in REDIRECT_PATTERNS.finditer(variant):
                 hits.append(g.group(0))
             for g in DESTINATION_PATTERNS.finditer(variant):
+                hits.append(g.group(0))
+            for g in BANK_CHANGE.finditer(variant):
                 hits.append(g.group(0))
     return sorted(set(hits))
 
@@ -526,6 +538,10 @@ def run(service, incident_id, agent):
             decision, reasons = agent.decide(ev, allowed)
             if service._evidence_key(service.evidence(incident_id)) != service._evidence_key(ev):
                 decision, reasons = "ESCALATE", ["The incident kept changing while the agent was deciding; a person must look."]
+    alert = (ev.get("incident") or {}).get("alert")
+    if alert and alert != "FEE_OVER_LIMIT" and decision != "ESCALATE" and "ESCALATE" in allowed:
+        reasons = [f"A safety alarm ({alert}) is up, so the agent's '{decision}' was overruled by code: a person must look."] + list(reasons or [])
+        decision = "ESCALATE"
     used_llm = getattr(agent, "used_llm", False)
     who = getattr(agent, "answered_by", None) if used_llm else None
     service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided", evidence=ev,

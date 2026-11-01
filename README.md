@@ -12,7 +12,7 @@ might be a scammer asking for new bank details. An AI agent reads the evidence a
 | Paying twice | Duplicate lock: no new payment on an incident while another might still clear (`RESERVED/UNKNOWN/SCHEDULED/PROCESSING/SENT/OVERDUE`). |
 | Lost reply after submit | Payment becomes `UNKNOWN`, budget stays reserved, reconcile by the **same `request_id`** (Airwallex rejects duplicates and returns the original). |
 | Replacing too early | `REPLACE` is only allowed after a **fresh `GET /transfers/{id}`** shows `CANCELLED` with a failure type on the safe-to-retry list. |
-| Invoice-redirection fraud | The agent has no tool that changes a beneficiary. Bank-detail failures (`ACCOUNT_CLOSED`, `BENEFICIARY_BANK_RETURNED`, …) and recalls always escalate. Supplier text is logged as *untrusted* and bank-change wording forces escalation. |
+| Invoice-redirection fraud | The agent has no tool that changes a beneficiary. Bank-detail failures (`ACCOUNT_CLOSED`, `BENEFICIARY_BANK_RETURNED`, …) and recalls always escalate. Supplier text is logged as *untrusted*; bank-change wording it recognises (a best-effort filter, see `tests/test_nov1_*` and `tests/test_indep.py`) forces escalation. |
 | Overspending | Per-payment and daily caps count reserved and uncertain payments, serialized with SQLite `BEGIN IMMEDIATE`. |
 | Changed terms | An operator approval binds beneficiary, amount, currency and expiry; it can be used exactly once (unique index). |
 | Runaway agent | Operator **STOP** switch; a reserved payment that hits STOP is released without being sent. |
@@ -37,7 +37,8 @@ Python 3.10+, standard library only.
 
 ```sh
 export AWX_CLIENT_ID=...  AWX_API_KEY=...        # sandbox scoped key
-export OPERATOR_TOKEN=choose-a-secret
+export OPERATOR_TOKEN=choose-a-secret   # single-operator demo: two-person rules (co-sign, system-STOP resume) cannot apply with one person;
+# for those, use OPERATOR_TOKENS="zach:secret1,jordan:secret2"
 # AI brain (free, open-source). The local model runs on this machine; the default chain asks a free hosted
 # open-weights model (GPT-OSS 20B via Pollinations) first. Account/routing numbers, IBANs and emails are stripped
 # from supplier text before ANY model sees it; for a strictly local setup use AGENT_PROVIDER=local.
@@ -53,7 +54,7 @@ export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (n
 # a click never waits more than AGENT_CLICK_BUDGET (default 6s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
-python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review  # 101 tests, no network (incl. two independent reviewer suites)
+python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review tests.test_nov1_review tests.test_nov1_verify tests.test_indep  # 133 test runs, no network (incl. the independent reviewer suites)
 python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
 AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)
 ```
