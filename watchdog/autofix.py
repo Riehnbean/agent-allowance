@@ -59,6 +59,25 @@ def run_suite(root):
     return r.returncode == 0, " | ".join(tail)
 
 
+def failing_tests(root):
+    """Ids of every failing test (sub-tests included) - so a fix is judged against what was already failing."""
+    r = subprocess.run([sys.executable, "-m", "unittest", "-v", *test_modules(root)], cwd=root, capture_output=True, text=True, timeout=1200)
+    return set(re.findall(r"^(?:FAIL|ERROR): (.+)$", r.stderr or "", re.M))
+
+
+def broken_findings(root):
+    ok, out = run_py(root, "import glob,json\nfrom watchdog.replay import replay\n"
+                           "print(json.dumps(sorted(f.split('/')[-1] for f in glob.glob('watchdog/findings/*.json') if replay(f,False)!=([],None))))")
+    return set(json.loads(out.strip().splitlines()[-1])) if out.strip() else set()
+
+
+def hunt_rules(root, n=300):
+    ok, out = run_py(root, "import json\nfrom watchdog.sim import gen,play\nr=set()\n"
+                           f"for s in range(900000,{900000 + n}):\n v,c=play(gen(s)); r|={{x[1] for x in v}}|({{'CRASH'}} if c else set())\n"
+                           "print(json.dumps(sorted(r)))")
+    return set(json.loads(out.strip().splitlines()[-1])) if out.strip() else {"HUNT_ERROR"}
+
+
 def run_py(root, code, timeout=1200):
     r = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=timeout)
     return r.returncode == 0, (r.stdout + r.stderr).strip()[-400:]
@@ -129,17 +148,26 @@ def try_fix(finding, path, trace, feedback):
     work = os.path.join(scratch, "repo")
     shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.db*"))
     gates = {}
+    base = BASELINE  # what was already failing at HEAD before this attempt (other open findings)
     ok, msg = gate_scope_and_strength(edits, work)
     gates["G1_G2"] = msg
     if ok:
-        ok, msg = run_suite(work)
-        gates["G3_tests"] = "pass" if ok else "FAIL " + msg
+        new_fail = failing_tests(work) - base["tests"]
+        ok = not new_fail
+        gates["G3_tests"] = "pass (no test that passed before fails now)" if ok else "FAIL newly failing: " + "; ".join(sorted(new_fail))[:300]
     if ok:
-        ok, msg = run_py(work, "import glob,sys\nfrom watchdog.replay import replay\nbad=[f for f in glob.glob('watchdog/findings/*.json') if replay(f,False)!=([],None)]\nprint(bad); sys.exit(1 if bad else 0)")
-        gates["G4_replays"] = "pass" if ok else "FAIL " + msg
+        still = broken_findings(work)
+        name = os.path.basename(path)
+        newly = still - base["findings"]
+        ok = name not in still and not newly and len(still) < len(base["findings"])
+        gates["G4_replays"] = (f"pass ({name} fixed; open findings {len(base['findings'])} -> {len(still)})" if ok else
+                               f"FAIL target still broken={name in still}, newly broken={sorted(newly)}")
     if ok:
-        ok, msg = run_py(work, "import sys\nfrom watchdog.sim import gen,play\nbad=[s for s in range(900000,900300) if play(gen(s))!=([],None)]\nprint(bad[:5]); sys.exit(1 if bad else 0)")
-        gates["G5_hunt"] = "pass" if ok else "FAIL " + msg
+        rules = hunt_rules(work)
+        allowed = {json.load(open(os.path.join(FIND, f)))["rule"] for f in base["findings"] if f != os.path.basename(path)}
+        extra = rules - allowed
+        ok = not extra
+        gates["G5_hunt"] = "pass (300 fresh scenarios, no new kind of break)" if ok else "FAIL new kinds of break: " + ", ".join(sorted(extra))
     diff = subprocess.run(["diff", "-ru", os.path.join(ROOT, "allowance"), os.path.join(work, "allowance")], capture_output=True, text=True).stdout
     if ok:
         verdict = ask_claude(REVIEW_MODEL, REVIEW_SYSTEM, f"FINDING: {finding['rule']} - {finding['detail']}\nEXPLANATION: {explanation}\nDIFF:\n{diff[:30000]}", 300).strip()
@@ -188,10 +216,22 @@ def open_findings():
     return out
 
 
+BASELINE = {"tests": set(), "findings": set()}
+
+
+def refresh_baseline():
+    BASELINE["tests"] = failing_tests(ROOT)
+    BASELINE["findings"] = broken_findings(ROOT)
+
+
 def repair(desk=None):
-    """Fix every open finding. desk: a live Service to STOP/resume (None when run from the command line)."""
+    """Fix every open finding, one at a time; each fix is judged against what was already broken.
+    desk: a live Service to STOP/resume (None when run from the command line)."""
     results = []
     for path, rec, trace in open_findings():
+        refresh_baseline()
+        if os.path.basename(path) not in BASELINE["findings"]:
+            continue  # an earlier fix in this cycle already cured it
         money = rec["rule"] in MONEY_RULES
         if money and desk is not None:
             desk.kill("watchdog", f"Watchdog: money rule {rec['rule']} broken - stopped until an automatic fix passes all gates")
