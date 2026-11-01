@@ -3,6 +3,12 @@
 **Airwallex Agentic Banking Hackathon · Treasury & Ops · Starter Kit 03 (Payment Ops Incident Commander)**
 **Builder:** Zach Riehn (Zach's Team)
 
+> **In 30 seconds.** When a supplier payment fails or a supplier says "we never got paid", an AI agent reads the situation and recommends **wait, re-send, escalate or close**. It **cannot move money**: code decides what is allowed, a person approves every payment, and every limit is enforced in code, including in USD for invoices paid abroad through a **locked Airwallex FX quote**. The AI earns its place by reading what supplier emails *mean*: it catches 13/13 test cases where keyword rules catch 10/13. And every hour the desk **attacks itself and repairs itself**: thousands of generated attacks, and when a money rule breaks, payments stop, Claude writes a fix, six automatic gates (including a second AI) must pass, and the fix ships with a receipt. No person needed; if no fix passes, payments stay stopped.
+>
+> **Try it:** `python3 demo.py` (no keys, one minute). **Proof:** `receipts/` (sandbox runs, model evals, an unattended self-repair).
+
+![How it works](docs/flow.png)
+
 ## How this was built
 I directed the project. AI coding agents wrote the code, tests and docs. Claude did the main build, and a second AI (OpenAI Codex) reviewed it independently and acted as the attacker. I chose the problem and the safety rules, reviewed the demos and decided what shipped. Every claim in this document can be checked with the tests and scripts in the repo.
 

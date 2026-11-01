@@ -1,0 +1,7 @@
+flowchart LR
+  A["Supplier email<br/>'we never got paid'<br/>(untrusted)"] --> B["AI agent<br/>Claude + open-source cross-check<br/>reads what it MEANS"]
+  F["Airwallex<br/>fresh transfer read,<br/>locked FX quote"] --> C
+  B -->|"recommends one of:<br/>WAIT / REPLACE / ESCALATE / CLOSE"| C{"Code<br/>allowed actions,<br/>caps in USD, approvals,<br/>STOP switch"}
+  C -->|"allowed + human approves"| D["Airwallex transfer<br/>same request_id,<br/>quote_id"]
+  C -->|"anything else"| E["Refused + logged"]
+  W["Watchdog (hourly)<br/>attacks the desk,<br/>auto-fixes behind 6 gates"] -.->|"tested fix"| C
