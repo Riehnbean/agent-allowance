@@ -349,6 +349,13 @@ class Service:
             if strict:
                 raise
             return self.payment(request_id)
+        if t is not None and not self._usable_transfer(t):
+            # An empty or half-filled reply is not an observation. Never let it stand in for one.
+            self.s.log("provider", "reconcile_failed", "observed", pay["incident_id"], request_id=request_id,
+                       error="incomplete transfer record from Airwallex", got=str(t)[:200])
+            if strict:
+                raise Ambiguous("Airwallex returned an incomplete record for the earlier payment")
+            return self.payment(request_id)
         if t is None:
             if strict:
                 raise Ambiguous("Airwallex has no record of the earlier payment")
@@ -360,7 +367,16 @@ class Service:
                                note="still held; an operator can re-send with the same request_id")
             return self.payment(request_id)
         self._apply_provider(request_id, t, "provider_get")
-        return self.payment(request_id)
+        after = self.payment(request_id)
+        if strict and (after["status"] != t["status"] or after["status_source"] != "provider_get"):
+            # The read was refused (mismatch, alarm) or could not be applied as-is: it proves nothing.
+            raise Ambiguous(f"Airwallex says {t['status']} but that could not be recorded as-is ({after['status']})")
+        return after
+
+    @staticmethod
+    def _usable_transfer(t):
+        return (isinstance(t, dict) and isinstance(t.get("status"), str) and t["status"] in IN_FLIGHT + ("PAID", "CANCELLED")
+                and t["status"] not in ("RESERVED", "UNKNOWN") and bool(t.get("id") or t.get("request_id")))
 
     def resend(self, request_id, operator):
         """Operator action for a payment stuck UNKNOWN / RESERVED that Airwallex has never heard of.
@@ -459,11 +475,12 @@ class Service:
         return sorted(acts)
 
     def supplier_message(self, incident_id, text):
-        self.s.log("supplier", "supplier_message", "untrusted", incident_id, text=text[:2000])
         from .agent import fraud_signals
-        if fraud_signals([text]):
-            # Sticky: later "any update?" messages can't push it out of view.
-            self._alert(incident_id, "FRAUD_SIGNAL")
+        with self.s.lock:  # message + alarm land together; a decision can't be recorded in between
+            self.s.log("supplier", "supplier_message", "untrusted", incident_id, text=text[:2000])
+            if fraud_signals([text]):
+                # Sticky: later "any update?" messages can't push it out of view.
+                self._alert(incident_id, "FRAUD_SIGNAL")
 
     @staticmethod
     def _evidence_key(ev):
@@ -481,13 +498,22 @@ class Service:
             raise Refused(f"agent proposed {decision}, but code only allows {allowed}")
         import hashlib
         ev_hash = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()[:16] if evidence else None
-        if evidence is not None and decision != "ESCALATE":
-            now_ev = self.evidence(incident_id)
-            if self._evidence_key(now_ev) != self._evidence_key(evidence):
-                self.s.log("policy", "agent_decision_stale", "decided", incident_id, proposed=decision, allowed=allowed)
+        stale = []
+
+        def still_current():
+            # Runs under the store lock, right before the append (supplier messages and alarms take the same lock).
+            if evidence is None or decision == "ESCALATE":
+                return
+            if self._evidence_key(self.evidence(incident_id)) != self._evidence_key(evidence) or decision not in self.allowed_actions(incident_id):
+                stale.append(1)
                 raise Refused("the incident changed while the agent was deciding; that advice is stale and was not recorded")
-        self.s.log("agent", "decision", source, incident_id, decision=decision, reasons=reasons, allowed=allowed, evidence_hash=ev_hash,
-                   evidence=evidence, answered_by=answered_by)
+        try:
+            self.s.log("agent", "decision", source, incident_id, _guard=still_current, decision=decision, reasons=reasons,
+                       allowed=allowed, evidence_hash=ev_hash, evidence=evidence, answered_by=answered_by)
+        except Refused:
+            if stale:
+                self.s.log("policy", "agent_decision_stale", "decided", incident_id, proposed=decision, allowed=allowed)
+            raise
         if decision == "ESCALATE":
             with self.s.tx():
                 self.s.db.execute("UPDATE incidents SET state='ESCALATED' WHERE id=? AND state='OPEN'", (incident_id,))

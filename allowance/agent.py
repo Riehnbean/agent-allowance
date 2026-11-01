@@ -45,9 +45,10 @@ _WORD_DIGITS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "f
                 "seven": "7", "eight": "8", "nine": "9"}
 _WORD_DIGIT_RUN = re.compile(r"\b(?:(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)\b[\s,-]*){4,}", re.I)
 _TAGS = re.compile(r"<[^>]{1,40}>|[*_`~]{1,3}")
-_B64 = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
-_IBAN_SPACED = re.compile(r"\b([A-Z]{2}\d{2})((?:[\s-]?[A-Z0-9]{2,4}){3,8})\b")
-_DIGIT_RUN = re.compile(r"\b(?:\d[\s-]?){4,}\d\b")
+_INVISIBLE = re.compile(r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u206a-\u206f\ufeff]")
+_B64 = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=])")
+_IBAN_SPACED = re.compile(r"\b([A-Z]{2}\d{2})((?:[\s.-]?[A-Z0-9]{2,4}){3,8})\b", re.I)
+_DIGIT_RUN = re.compile(r"\b(?:\d[\s.\-_/]?){4,}\d\b")
 
 
 def normalize(text):
@@ -56,9 +57,14 @@ def normalize(text):
     and account numbers, and base64 blobs that decode to readable text. Returns plain text; it is a
     best-effort unmasking, not a guarantee that every encoding is caught."""
     import base64
+    import html
     import unicodedata
     t = text or ""
-    t = _TAGS.sub(" ", t)
+    for _ in range(2):  # double-encoded entities (&amp;#101;) too
+        t = html.unescape(t)
+    t = unicodedata.normalize("NFKC", t)
+    t = _INVISIBLE.sub("", t)
+    t = _TAGS.sub("", t)  # n<b>ew</b> -> new ; **new** **bank** -> new bank
     out = []
     for ch in t:
         if ch.isdigit() and not ch.isascii():
@@ -71,8 +77,8 @@ def normalize(text):
     def words_to_digits(m):
         return "".join(_WORD_DIGITS[w.lower()] for w in re.findall(r"[A-Za-z]+", m.group(0)))
     t = _WORD_DIGIT_RUN.sub(lambda m: words_to_digits(m) + " ", t)
-    t = _IBAN_SPACED.sub(lambda m: m.group(1) + re.sub(r"[\s-]", "", m.group(2)), t)
-    t = _DIGIT_RUN.sub(lambda m: re.sub(r"[\s-]", "", m.group(0)), t)
+    t = _IBAN_SPACED.sub(lambda m: (m.group(1) + re.sub(r"[\s.-]", "", m.group(2))).upper(), t)
+    t = _DIGIT_RUN.sub(lambda m: re.sub(r"[\s.\-_/]", "", m.group(0)), t)
 
     def b64(m):
         try:
@@ -96,11 +102,14 @@ def fraud_signals(messages):
     hits = []
     for m in messages or []:
         n = normalize(m)
-        for g in REDIRECT_PATTERNS.finditer(n):
-            hits.append(g.group(0))
-        for g in DESTINATION_PATTERNS.finditer(n):
-            hits.append(g.group(0))
-    return hits
+        # also check a spaced variant (markup between whole words) - either reading counts
+        spaced = normalize(_TAGS.sub(" ", _INVISIBLE.sub("", m or "")))
+        for variant in (n, spaced):
+            for g in REDIRECT_PATTERNS.finditer(variant):
+                hits.append(g.group(0))
+            for g in DESTINATION_PATTERNS.finditer(variant):
+                hits.append(g.group(0))
+    return sorted(set(hits))
 
 
 class RulesAgent:
@@ -224,7 +233,7 @@ def digest(ev, allowed):
 
 _LONG_NUM = re.compile(r"\b(?:\d[\s-]?){4,}\d\b")
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b", re.I)
 
 
 def redact(text):
@@ -232,10 +241,11 @@ def redact(text):
     runs (also when spelled out, spaced, dashed, in non-ASCII digits or base64), and email addresses.
     It is a text filter, not a guarantee against every encoding; code has already read the raw text for
     scam wording, so the model loses nothing it needs."""
-    text = normalize(text)  # spelled-out, spaced, dashed, non-ASCII and base64 forms become plain first
+    text = normalize(text)  # spelled-out, spaced, dashed, entity, invisible-char and base64 forms become plain first
+    # an encoded blob that decoded to readable text goes entirely: the original AND its decoding
+    text = re.sub(r"[A-Za-z0-9+/]{16,}={0,2} \(decoded: [^)]*\)", "[encoded text removed]", text)
     text = _IBAN.sub("[account removed]", text)
     text = _LONG_NUM.sub("[number removed]", text)
-    text = re.sub(r"\(decoded: [^)]*\)", "[decoded text removed]", text)
     return _EMAIL.sub("[email removed]", text)
 
 

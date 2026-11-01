@@ -5,7 +5,7 @@ Team: Zach's Team (Zach Riehn). Built by AI coding agents (Claude) under Zach's 
 
 A supplier says they were never paid. The transfer might still land, might have bounced, or the "supplier"
 might be a scammer asking for new bank details. An AI agent reads the evidence and proposes **WAIT**, **REPLACE**,
-**ESCALATE** or **CLOSE** — but every rule that can lose money lives in code, not in the prompt:
+**ESCALATE** or **CLOSE** — but the money rules below live in code, not in the prompt (each has a test; `COVERAGE.md` lists what is and is not covered):
 
 | Risk | Enforced in code |
 |---|---|

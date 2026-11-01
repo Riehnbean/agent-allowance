@@ -148,8 +148,12 @@ class Store:
         with self.lock:
             return self.db.execute(sql, a).fetchone()
 
-    def log(self, actor, kind, provenance, incident_id=None, **body):
+    def log(self, actor, kind, provenance, incident_id=None, _guard=None, **body):
+        """_guard: optional check run under the same lock, immediately before the append. It raises
+        to stop the write, so "check the facts, then record" cannot be split by another thread."""
         with self.lock:
+            if _guard is not None:
+                _guard()
             self._log(actor, kind, provenance, incident_id, **body)
 
     def _log(self, actor, kind, provenance, incident_id=None, **body):
