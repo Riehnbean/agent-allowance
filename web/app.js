@@ -4,6 +4,7 @@ const el = (t, cls, text) => { const e = document.createElement(t); if (cls) e.c
 let token = ""; try { token = sessionStorage.getItem("op-token") || ""; } catch {}
 let S = null, current = null;
 const usd = c => "$" + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money = (c, ccy) => !ccy || ccy === "USD" ? usd(c) : (ccy === "EUR" ? "€" : ccy + " ") + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const when = t => new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit", second: "2-digit" }) + " CT";
 
 async function api(path, body) {
@@ -33,6 +34,7 @@ async function load(quiet) {
   if (quiet && (sig === lastSig || pressing)) return;
   lastSig = sig; S = next;
   $("#gate").hidden = true;
+  if (S.env) $("#env").textContent = S.env.replace(" - ", " · ");
   const p = S.policy;
   $("#budget").textContent = `Today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} committed · max ${usd(p.per_tx_cap)} per payment`;
   $("#agentname").textContent = S.agent;
@@ -50,7 +52,7 @@ async function load(quiet) {
   const list = $("#list"); list.replaceChildren();
   for (const i of S.incidents) {
     const li = el("li"); const b = el("button", "inc" + (current === i.id ? " sel" : ""));
-    b.append(el("b", null, i.invoice), el("span", "amt", usd(i.amount)), el("span", "st st-" + i.state, i.state));
+    b.append(el("b", null, i.invoice), el("span", "amt", money(i.amount, i.currency)), el("span", "st st-" + i.state, i.state));
     b.onclick = () => { current = i.id; render(); }; li.append(b); list.append(li);
   }
   if (!current && S.incidents[0]) current = S.incidents[0].id;
@@ -65,7 +67,7 @@ function render() {
   if (!i) { d.append(el("p", "empty", "Open an incident to start.")); return; }
   [...document.querySelectorAll(".inc")][S.incidents.indexOf(i)]?.classList.add("sel");
   const head = el("div", "dhead");
-  head.append(el("h2", null, `${i.supplier} · ${i.invoice}`), el("span", "big", usd(i.amount)), el("span", "st st-" + i.state, i.state));
+  head.append(el("h2", null, `${i.supplier} · ${i.invoice}`), el("span", "big", money(i.amount, i.currency)), el("span", "st st-" + i.state, i.state));
   d.append(head);
   if (i.alert) { const al = el("div", "alert"); al.append(el("b", null, "Safety alarm: " + i.alert.replace(/_/g, " ")), el("span", null, " - new payments on this incident are frozen until a person resolves it.")); d.append(al); }
   if (S.policy.killed) { const al = el("div", "alert"); al.append(el("b", null, "STOP is on: "), el("span", null, S.policy.killed_reason || "")); d.append(al); }
@@ -95,6 +97,7 @@ function render() {
     const l = el("div"); l.append(el("b", null, p.role === "original" ? "Original" : "Replacement"), pill(p.status));
     if (p.failure_type) l.append(el("span", "fail", p.failure_type + (p.failure_message ? ` - "${p.failure_message}"` : "")));
     if (p.anomaly) l.append(el("span", "fail", "⚠ " + p.anomaly.replace(/_/g, " ")));
+    if (p.fx_quote_id) l.append(el("small", null, `Locked FX: ${money(p.amount, p.currency)} = ${usd(p.cost_amount)} at ${p.fx_rate} (Airwallex quote, counted against USD caps)`));
     if (p.fee) l.append(el("small", null, "Airwallex fee " + usd(p.fee)));
     l.append(el("small", null, `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
     const r = el("div", "payacts");
@@ -127,7 +130,7 @@ function render() {
   const ops = el("div", "btns");
   const role = i.payments.length ? "replacement" : "original";
   const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
-  const ap = el("button", "primary", `Approve ${role} ${usd(i.amount)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN";
+  const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN";
   const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - status ${r.status}`); pay.disabled = !unused;
   const note = el("input", "note"); note.placeholder = i.alert ? "Resolution note (required: what you checked)" : "Optional note"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
@@ -138,11 +141,11 @@ function render() {
   ops.append(ap, pay, note, reopen, close, rc); op.append(ops);
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
     if (unused.approved_by !== S.me) {
-      const cb = el("button", "primary", `Co-sign ${usd(i.amount)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
+      const cb = el("button", "primary", `Co-sign ${money(i.amount, i.currency)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
       op.append(cb);
     } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${S.me} must open this desk with their own sign-in and co-sign.`));
   }
-  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${usd(unused.amount)}, USD, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
+  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${money(unused.amount, i.currency)}, ${i.currency}, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
   d.append(op);
 
   // Try to break it

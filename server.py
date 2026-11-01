@@ -55,7 +55,12 @@ class DropOnce:
         return t
 
 
-API = Airwallex()
+DEMO = os.environ.get("DEMO") == "1"
+if DEMO:  # `python3 demo.py`: in-memory stand-in for the sandbox, no keys, nothing leaves the machine
+    from allowance.demo_provider import DemoAirwallex
+    API = DemoAirwallex()
+else:
+    API = Airwallex()
 PROV = DropOnce(API)
 SVC = Service(Store(DB), PROV)
 SVC.s.init_policy("USD", per_tx_cap=int(os.environ.get("PER_TX_CAP", 100_000)), daily_cap=int(os.environ.get("DAILY_CAP", 300_000)))
@@ -77,7 +82,7 @@ def state():
     s = SVC.s
     incs = []
     for i in s.q("SELECT * FROM incidents ORDER BY id DESC LIMIT 20"):
-        pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,fee,anomaly,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
+        pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,currency,cost_amount,fx_rate,fx_quote_id,fee,anomaly,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
         aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
         # Same rule the service enforces: co-sign is needed over the threshold for ONE payment, or for this payee's 24h total.
         pol0 = s.policy()
@@ -101,7 +106,7 @@ def state():
             "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
             "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": AGENT.nice, "drop_armed": PROV.armed,
-            "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only", "watchdog": watchdog_status()}
+            "failure_types": ALL_FAILURE_TYPES, "env": ("OFFLINE DEMO - simulated Airwallex, no network" if DEMO else "Airwallex SANDBOX - fake money only"), "watchdog": watchdog_status()}
 
 
 def watchdog_status():
@@ -245,7 +250,7 @@ def handle(method, path, body, op="operator"):
             role = body["role"]
             amt = cents(body["amount"]) if body.get("amount") else inc["amount"]
             ben = body.get("beneficiary_id") or inc["beneficiary_id"]
-            return SVC.pay(unused_approval(iid, role), role, ben, amt, "USD")
+            return SVC.pay(unused_approval(iid, role), role, ben, amt, inc["currency"])
         if act == "agent":
             return run(SVC, iid, LLMAgent())  # one agent object per request: no shared per-call flags between threads
         if act == "supplier":
@@ -403,7 +408,7 @@ def lift_watchdog_stop_if_green():
         print("watchdog: desk resumed on repaired code", flush=True)
 
 
-if __name__ == "__main__":
+def main():
     SVC.s.validate_policy()
     if not SVC._meta("orphan_scan_since"):
         SVC._meta("orphan_scan_since", str(time.time()))  # transfers made before the desk existed aren't orphans
@@ -416,3 +421,7 @@ if __name__ == "__main__":
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
     print(f"Operator desk on http://{host}:{port}  (Airwallex SANDBOX, agent={AGENT.label})")
     ThreadingHTTPServer((host, port), H).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

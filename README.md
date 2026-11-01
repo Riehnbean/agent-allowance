@@ -23,6 +23,14 @@ might be a scammer asking for new bank details. An AI agent reads the evidence a
 Every step lands in an append-only evidence log (SQLite triggers block UPDATE/DELETE) and an exportable receipt that labels
 each line: **observed** (read back from Airwallex), **decided** (code), **model** (LLM opinion), **operator** (a person), **untrusted** (supplier text).
 
+
+## Try it in one minute (no keys, nothing leaves your machine)
+
+```
+python3 demo.py
+```
+Open http://127.0.0.1:8710 and sign in with token `zach` (a second browser as `jordan` to try co-signing). Four seeded incidents: a failed transfer to replace, a scam "new bank details" email the desk escalates, a "we only received $280" reply that needs judgment, and a EUR invoice paid through a locked FX quote. Set `ANTHROPIC_API_KEY` to have Claude answer, or `AGENT_PROVIDER=pollinations` for the free open-source model; otherwise the rulebook does.
+
 ## Airwallex APIs used (sandbox only)
 `POST /authentication/login` · `POST /beneficiaries/create` · `POST /transfers/create` · `GET /transfers/{id}` ·
 `GET /transfers?request_id=` · `POST /simulation/transfers/{id}/transition` · `GET /balances/current` ·
