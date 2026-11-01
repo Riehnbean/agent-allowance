@@ -230,11 +230,13 @@ class Service:
         if not ap:
             raise Refused("no such approval")
         for p in self.s.q("SELECT request_id FROM payments WHERE incident_id=?", ap["incident_id"]):
-            before = self.payment(p["request_id"])["checked_at"]
-            after = self.reconcile(p["request_id"])
-            if (after["checked_at"] or 0) <= (before or 0) and after["status_source"] != "provider_get":
-                raise Refused("could not re-read the earlier payment from Airwallex right now - no replacement sent")
-            if after["checked_at"] is None or self.now() - after["checked_at"] > 30:
+            # strict=True: a failed or not-found read raises here. A cached CANCELLED, however recent,
+            # never counts - the evidence has to come from the read made in this very attempt.
+            try:
+                after = self.reconcile(p["request_id"], strict=True)
+            except (Ambiguous, ProviderError) as e:
+                raise Refused(f"could not re-read the earlier payment from Airwallex right now ({e}) - no replacement sent") from None
+            if after["status_source"] != "provider_get" or after["checked_at"] is None or self.now() - after["checked_at"] > 30:
                 raise Refused("could not get a fresh Airwallex status for the earlier payment - no replacement sent")
 
     def _pay(self, request_id, approval_id, role, beneficiary_id, amount, currency):
@@ -335,16 +337,21 @@ class Service:
         if bal is not None and bal < pay["amount"] + self.s.policy()["max_fee"]:
             block("INSUFFICIENT_BALANCE_PRECHECK", f"wallet balance {bal/100:.2f} would not cover this payment plus fees")
 
-    def reconcile(self, request_id):
+    def reconcile(self, request_id, strict=False):
         """Ask Airwallex what really happened to this request_id. Read-only towards Airwallex:
-        it never sends anything, so the sweeper and webhooks can call it safely."""
+        it never sends anything, so the sweeper and webhooks can call it safely.
+        strict=True (used before a replacement): a failed or empty read raises instead of returning the cached row."""
         pay = self.payment(request_id)
         try:
             t = self.p.get_transfer(pay["provider_id"]) if pay["provider_id"] else self.p.find_by_request_id(request_id)
         except (Ambiguous, ProviderError) as e:
             self.s.log("provider", "reconcile_failed", "observed", pay["incident_id"], request_id=request_id, error=str(e))
+            if strict:
+                raise
             return self.payment(request_id)
         if t is None:
+            if strict:
+                raise Ambiguous("Airwallex has no record of the earlier payment")
             if pay["status"] in ("UNKNOWN", "RESERVED"):
                 last = self._hint_at.get(("nf", request_id), 0)
                 if self.now() - last >= 3600:
@@ -364,7 +371,7 @@ class Service:
         if pay["status"] == "RESERVED" and self.now() - pay["updated_at"] < 60:
             raise Refused("the first send may still be in progress - try again in a minute")
         ap = self.s.one("SELECT expires_at FROM approvals WHERE id=?", pay["approval_id"])
-        if not ap or self.now() > ap["expires_at"]:
+        if not ap or self.now() >= ap["expires_at"]:
             self.s.log("policy", "resend_refused", "decided", pay["incident_id"], request_id=request_id, reason="approval expired")
             raise Refused("the approval for this payment has expired, so it cannot be sent on that approval. It stays held "
                           "(it is checked against Airwallex automatically); if Airwallex never received it, release it and approve again")
@@ -458,6 +465,13 @@ class Service:
             # Sticky: later "any update?" messages can't push it out of view.
             self._alert(incident_id, "FRAUD_SIGNAL")
 
+    @staticmethod
+    def _evidence_key(ev):
+        """What a decision was based on: payments, alerts, supplier messages, state - not the clock."""
+        e = dict(ev or {})
+        e.pop("now", None)
+        return json.dumps(e, sort_keys=True, default=str)
+
     def record_decision(self, incident_id, decision, reasons, source, evidence=None, answered_by=None):
         if self._incident(incident_id)["state"] == "RESOLVED":
             raise Refused("incident is resolved; the agent has nothing to decide")
@@ -467,6 +481,11 @@ class Service:
             raise Refused(f"agent proposed {decision}, but code only allows {allowed}")
         import hashlib
         ev_hash = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()[:16] if evidence else None
+        if evidence is not None and decision != "ESCALATE":
+            now_ev = self.evidence(incident_id)
+            if self._evidence_key(now_ev) != self._evidence_key(evidence):
+                self.s.log("policy", "agent_decision_stale", "decided", incident_id, proposed=decision, allowed=allowed)
+                raise Refused("the incident changed while the agent was deciding; that advice is stale and was not recorded")
         self.s.log("agent", "decision", source, incident_id, decision=decision, reasons=reasons, allowed=allowed, evidence_hash=ev_hash,
                    evidence=evidence, answered_by=answered_by)
         if decision == "ESCALATE":
@@ -530,7 +549,7 @@ class Service:
             raise Refused("this approval was already used once")
         if ap["role"] != role:
             raise Refused(f"approval is for the {ap['role']} payment, not the {role}")
-        if self.now() > ap["expires_at"]:
+        if self.now() >= ap["expires_at"]:
             raise Refused("approval expired")
         if (ap["beneficiary_id"], ap["amount"], ap["currency"]) != (beneficiary_id, amount, currency):
             raise Refused("terms differ from what the operator approved (beneficiary, amount or currency)")

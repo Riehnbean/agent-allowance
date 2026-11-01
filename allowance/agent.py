@@ -8,8 +8,8 @@ Two brains, same contract:
   * RulesAgent - deterministic, no network, used in tests and as the automatic fallback.
   * LLMAgent   - asks a language model to weigh the evidence and write the explanation. By default
                  a free hosted open-weights model (GPT-OSS 20B), then Qwen2.5-3B on this machine, then
-                 the rulebook. Nothing is billed. Account numbers/emails are redacted before any model
-                 sees supplier text. Groq, Gemini, Ollama or Anthropic also work.
+                 the rulebook. Nothing is billed. Account numbers/emails are redacted (best effort) before any
+                 model sees supplier text. Groq, Gemini, Ollama or Anthropic also work.
                  Its answer is parsed and re-checked against allowed_actions(); anything else is
                  downgraded here and rejected again by the Service.
 """
@@ -41,10 +41,64 @@ def service_refused(msg):
     return Refused(msg)
 
 
+_WORD_DIGITS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+                "seven": "7", "eight": "8", "nine": "9"}
+_WORD_DIGIT_RUN = re.compile(r"\b(?:(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)\b[\s,-]*){4,}", re.I)
+_TAGS = re.compile(r"<[^>]{1,40}>|[*_`~]{1,3}")
+_B64 = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
+_IBAN_SPACED = re.compile(r"\b([A-Z]{2}\d{2})((?:[\s-]?[A-Z0-9]{2,4}){3,8})\b")
+_DIGIT_RUN = re.compile(r"\b(?:\d[\s-]?){4,}\d\b")
+
+
+def normalize(text):
+    """Undo cheap disguises before scam wording and account numbers are looked for:
+    markdown/HTML wrapping, non-ASCII digits, numbers spelled out as words, spaced or dashed IBANs
+    and account numbers, and base64 blobs that decode to readable text. Returns plain text; it is a
+    best-effort unmasking, not a guarantee that every encoding is caught."""
+    import base64
+    import unicodedata
+    t = text or ""
+    t = _TAGS.sub(" ", t)
+    out = []
+    for ch in t:
+        if ch.isdigit() and not ch.isascii():
+            d = unicodedata.digit(ch, None)
+            out.append(str(d) if d is not None else ch)
+        else:
+            out.append(ch)
+    t = "".join(out)
+
+    def words_to_digits(m):
+        return "".join(_WORD_DIGITS[w.lower()] for w in re.findall(r"[A-Za-z]+", m.group(0)))
+    t = _WORD_DIGIT_RUN.sub(lambda m: words_to_digits(m) + " ", t)
+    t = _IBAN_SPACED.sub(lambda m: m.group(1) + re.sub(r"[\s-]", "", m.group(2)), t)
+    t = _DIGIT_RUN.sub(lambda m: re.sub(r"[\s-]", "", m.group(0)), t)
+
+    def b64(m):
+        try:
+            raw = base64.b64decode(m.group(0) + "=" * (-len(m.group(0)) % 4), validate=False).decode("utf-8")
+        except Exception:
+            return m.group(0)
+        return m.group(0) + " (decoded: " + raw + ")" if raw.isprintable() and raw.strip() else m.group(0)
+    t = _B64.sub(b64, t)
+    return re.sub(r"[ \t]+", " ", t)
+
+
+DESTINATION_PATTERNS = re.compile(
+    r"(remit|send|pay|transfer|wire|deposit)\w*\s+(it\s+|the\s+\w+\s+)?(to|into)\s+(this\s+|the\s+|our\s+)?(account|iban|bank|acct)|"
+    r"\b(account|acct|iban)\s*(number|no\.?)?\s*[:#]?\s*[A-Z]{0,2}\d{6,}|\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b|"
+    r"(decode|decoded|base64)\b.{0,40}(destination|account|bank|payment)|\(decoded:",
+    re.I,
+)
+
+
 def fraud_signals(messages):
     hits = []
     for m in messages or []:
-        for g in REDIRECT_PATTERNS.finditer(m or ""):
+        n = normalize(m)
+        for g in REDIRECT_PATTERNS.finditer(n):
+            hits.append(g.group(0))
+        for g in DESTINATION_PATTERNS.finditer(n):
             hits.append(g.group(0))
     return hits
 
@@ -174,10 +228,14 @@ _IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
 
 
 def redact(text):
-    """Account/routing numbers, IBANs and email addresses never reach a model, local or online.
-    Code has already read the raw text for scam wording (code_flags), so the model loses nothing it needs."""
+    """Best-effort redaction before supplier text goes to any model, local or online: IBANs and long digit
+    runs (also when spelled out, spaced, dashed, in non-ASCII digits or base64), and email addresses.
+    It is a text filter, not a guarantee against every encoding; code has already read the raw text for
+    scam wording, so the model loses nothing it needs."""
+    text = normalize(text)  # spelled-out, spaced, dashed, non-ASCII and base64 forms become plain first
     text = _IBAN.sub("[account removed]", text)
     text = _LONG_NUM.sub("[number removed]", text)
+    text = re.sub(r"\(decoded: [^)]*\)", "[decoded text removed]", text)
     return _EMAIL.sub("[email removed]", text)
 
 
@@ -430,6 +488,7 @@ _last_run = {}
 
 
 def run(service, incident_id, agent):
+    t0 = time.time()  # includes the provider re-reads below, not only the model wait
     # TRM-11: never decide on stale state - re-read every non-final payment from Airwallex first.
     for p in service.s.q("SELECT request_id,status FROM payments WHERE incident_id=? AND status NOT IN ('PAID','CANCELLED')", incident_id):
         try:
@@ -443,8 +502,20 @@ def run(service, incident_id, agent):
     _last_run[k] = service.now()
     ev = service.evidence(incident_id)
     allowed = service.allowed_actions(incident_id)
-    t0 = time.time()
     decision, reasons = agent.decide(ev, allowed)
+    # The evidence the agent saw must still be the evidence on file. If the incident changed while the
+    # model was thinking (a new supplier message, an alarm), the advice is stale: re-ask once with the
+    # fresh facts; if it moves again, or an alarm is now up, escalate to a person instead of guessing.
+    now_ev = service.evidence(incident_id)
+    if service._evidence_key(now_ev) != service._evidence_key(ev):
+        ev, allowed = now_ev, service.allowed_actions(incident_id)
+        if ev["incident"].get("alert"):
+            decision, reasons = "ESCALATE", ["The incident changed while the agent was deciding and a safety alarm "
+                                             f"({ev['incident']['alert']}) is now up; a person must look."]
+        else:
+            decision, reasons = agent.decide(ev, allowed)
+            if service._evidence_key(service.evidence(incident_id)) != service._evidence_key(ev):
+                decision, reasons = "ESCALATE", ["The incident kept changing while the agent was deciding; a person must look."]
     used_llm = getattr(agent, "used_llm", False)
     who = getattr(agent, "answered_by", None) if used_llm else None
     service.record_decision(incident_id, decision, reasons, "model" if used_llm else "decided", evidence=ev,

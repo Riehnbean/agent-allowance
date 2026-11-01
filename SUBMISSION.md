@@ -24,7 +24,7 @@ Agent Allowance is an incident desk on top of the Airwallex Transfers API. For e
 | **ESCALATE** | Bank details look wrong, fraud signals appear, or anything is unclear. |
 | **CLOSE** | The money is confirmed PAID and nothing else is in flight. |
 
-The model never touches money. Code first works out which actions are allowed. The model can only pick from that list, and anything else is rejected and logged. Every rule that could lose money is enforced in code and covered by a test:
+The model never touches money. Code first works out which actions are allowed. The model can only pick from that list, and anything else is rejected and logged. Each money rule below is enforced in code and has a named test; `COVERAGE.md` lists what is tested, what is partial and what is out of scope:
 
 - **No double payment.** A replacement is blocked while any payment on the incident might still clear. A lost Airwallex reply becomes `UNKNOWN`, the budget stays held, and the desk reconciles using the *same* `request_id`.
 - **No early replacement.** REPLACE needs a fresh `GET /transfers/{id}` at the moment of sending, showing the original CANCELLED for a retry-safe reason.
@@ -43,9 +43,9 @@ The demo desk runs this chain:
 
 The desk also runs with **no paid API at all**: open-source models only, then the rulebook. That's one setting.
 
-Account numbers, IBANs and emails are removed from supplier text before *any* model sees it. The code limits what the agent may do, so a weaker or tricked model can't create an unsafe action. It can only pick a worse *safe* one, and the operator sees which brain answered. Payments are already protected by code and human approval, so the double check only makes the *advice* safer.
+Account numbers, IBANs and emails are stripped from supplier text before *any* model sees it, including when they are spelled out, spaced, dashed, in non-Latin digits or base64 (a best-effort text filter, tested in `tests/test_nov1_review.py`, not a guarantee against every possible encoding). The code limits what the agent may do, so a weaker or tricked model can't create an unsafe action. It can only pick a worse *safe* one, and the operator sees which brain answered. Payments are already protected by code and human approval, so the double check only makes the *advice* safer.
 
-So the operator never waits on the model, the desk asks the AI as soon as an incident changes ("think-ahead"). A click returns within 6 seconds (the two AIs think in parallel, usually 3–4 seconds), and if they are not done, the rulebook answers.
+So the operator never waits on the model, the desk asks the AI as soon as an incident changes ("think-ahead"). The model wait is capped at 6 seconds (the two AIs think in parallel, usually 3–4 seconds), and if they are not done, the rulebook answers. The re-read of in-flight payments from Airwallex that happens before the models are asked has its own 30-second network timeout and is not inside that cap.
 
 ## Airwallex APIs used (sandbox)
 `POST /authentication/login` · `POST /beneficiaries/create` · `POST /transfers/create` · `GET /transfers/{id}` · `GET /transfers?request_id=` · `GET /balances/current` · `POST /simulation/transfers/{id}/transition` · `POST /simulation/deposit/create`
@@ -58,14 +58,14 @@ Things we checked by probing the sandbox:
 ## Evidence
 - **101 automated tests, no network.** They include two red-team suites written by independent AI reviewers: 20 attack tests, plus 9 holes found on Oct 27, each shipped as a failing test and then fixed.
 - **`scripts/sandbox_e2e.py`** runs 6 scenarios against the live Airwallex sandbox: normal pay, lost reply, channel-timeout replacement, closed account, payee edited in Airwallex, and same-payee totals needing a co-signer. All 6 pass.
-- **`scripts/llm_eval.py`** runs the real models on 9 tricky incidents, including a scam email and a prompt-injection attempt. Claude (Sonnet 5.5, via the hackathon's Claude API credits) got 9/9 in about 2 seconds each. With the open-source GPT-OSS 20B double-checking every answer, it was still 9/9 at about 5.6 seconds per decision. The small offline backup (Qwen2.5-3B on a 2-core CPU) got 7/9 on its own, and both of its misses were the cautious choice, so no money moved. A weak or tricked model costs time, never money.
+- **`scripts/llm_eval.py`** runs the real models on 9 tricky incidents, including a scam email and a prompt-injection attempt. Claude (Sonnet 5.5, via the hackathon's Claude API credits) got 9/9 at 2.0 seconds average. With the open-source GPT-OSS 20B double-checking every answer in parallel, it was still 9/9 at 2.0 seconds average (Nov 1 run). The small offline backup (Qwen2.5-3B on a 2-core CPU) got 7/9 on its own (Oct 27 run, 35 seconds average), and both of its misses were the cautious choice, so no money moved. In the cases we tested, a weak or tricked model cost time, not money; the money checks are code, and the tests in `tests/` are the list of what that code actually covers. The raw, dated output of each eval run is in `receipts/`.
 - **`COVERAGE.md`** maps 128 researched payment failure routes to how the desk handles each: 95 built and tested, 19 partial, 14 out of scope with reasons. Sources include Airwallex docs, Nacha, FBI IC3, idempotency guidance and the OWASP LLM Top 10.
 
 ## Honest scope
 - Sandbox only. It covers one owner, USD, one supplier and LOCAL (ACH) transfers.
 - Operator login is a demo token. The evidence log is tamper-*evident* inside the app, not tamper-proof against a database admin.
 - It is not production-ready, and it has no customers or revenue.
-- What it shows is a pattern: **let an AI agent help with payment incidents without ever giving it a way to lose money.**
+- What it shows is a pattern: **let an AI agent help with payment incidents while every path that moves money stays in tested code the agent cannot call.**
 
 ## Run it
 See `README.md`. It needs Python 3.10+ and the standard library only. Sandbox keys go in environment variables and are never committed.

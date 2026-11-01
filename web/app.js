@@ -24,8 +24,11 @@ async function act(path, body, ok) {
 let lastSig = "", pressing = false;
 for (const t of ["pointerdown"]) document.addEventListener(t, () => { pressing = true; }, true);
 for (const t of ["pointerup", "pointercancel"]) document.addEventListener(t, () => setTimeout(() => { pressing = false; }, 250), true);
+let loadSeq = 0;
 async function load(quiet) {
+  const seq = ++loadSeq;
   const next = await api("/api/state");
+  if (seq !== loadSeq) return; // a newer state request has been made since; this reply is obsolete and must not repaint
   const sig = JSON.stringify(next);
   if (quiet && (sig === lastSig || pressing)) return;
   lastSig = sig; S = next;
