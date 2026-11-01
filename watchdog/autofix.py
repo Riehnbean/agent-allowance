@@ -170,8 +170,14 @@ def try_fix(finding, path, trace, feedback):
         gates["G5_hunt"] = "pass (300 fresh scenarios, no new kind of break)" if ok else "FAIL new kinds of break: " + ", ".join(sorted(extra))
     diff = subprocess.run(["diff", "-ru", os.path.join(ROOT, "allowance"), os.path.join(work, "allowance")], capture_output=True, text=True).stdout
     if ok:
-        verdict = ask_claude(REVIEW_MODEL, REVIEW_SYSTEM, f"FINDING: {finding['rule']} - {finding['detail']}\nEXPLANATION: {explanation}\nDIFF:\n{diff[:30000]}", 300).strip()
-        ok = verdict.upper().startswith("APPROVE")
+        verdict = ""
+        for _ in range(2):  # the reviewer may think first; give it room, and one retry if it still says nothing
+            verdict = ask_claude(REVIEW_MODEL, REVIEW_SYSTEM, f"FINDING: {finding['rule']} - {finding['detail']}\nEXPLANATION: {explanation}\nDIFF:\n{diff[:30000]}", 4000).strip()
+            if verdict:
+                break
+        m = re.search(r"\b(APPROVE|REJECT)\b\s*:?(.*)", verdict, re.S)
+        ok = bool(m and m.group(1) == "APPROVE")
+        verdict = (m.group(0) if m else verdict or "(reviewer gave no answer)").strip()
         gates["G6_second_opinion"] = verdict[:300]
     return ok, gates, explanation, edits, diff, work
 
