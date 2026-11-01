@@ -101,7 +101,22 @@ def state():
             "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
             "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": AGENT.nice, "drop_armed": PROV.armed,
-            "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only"}
+            "failure_types": ALL_FAILURE_TYPES, "env": "Airwallex SANDBOX - fake money only", "watchdog": watchdog_status()}
+
+
+def watchdog_status():
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog")
+    try:
+        st = json.load(open(os.path.join(d, "status.json")))
+    except Exception:
+        st = {"state": "not run yet"}
+    try:
+        st["recent"] = [json.loads(x) for x in open(os.path.join(d, "log.jsonl")).read().splitlines()[-6:]]
+        for r in st["recent"]:
+            r.pop("diff", None)
+    except Exception:
+        st["recent"] = []
+    return st
 
 
 def ensure_beneficiary(op="operator"):
@@ -357,11 +372,44 @@ def sweeper():
     threading.Thread(target=loop, daemon=True).start()
 
 
+def watchdog_thread():
+    """Hourly by default: hunt -> automatic repair behind gates -> restart on the new code. No human step."""
+    import threading
+    every = float(os.environ.get("WATCHDOG_EVERY", "3600"))
+    if every <= 0:
+        return
+
+    def loop():
+        from watchdog.cycle import cycle
+        while True:
+            time.sleep(every)
+            try:
+                st = cycle(float(os.environ.get("WATCHDOG_MINUTES", "3")), desk=SVC)
+                if st["fixed"]:
+                    # new code was committed: restart once nothing is mid-send (a reserved payment finishes first)
+                    while SVC.s.one("SELECT 1 FROM payments WHERE status='RESERVED'"):
+                        time.sleep(5)
+                    print("watchdog: fix committed, restarting desk on the new code", flush=True)
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception as e:  # the Watchdog must never take the desk down
+                print("watchdog error:", e, flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def lift_watchdog_stop_if_green():
+    pol = SVC.s.policy()
+    if pol["killed"] and pol["killed_by"] == "watchdog" and watchdog_status().get("state") in ("green", "repaired"):
+        SVC.unkill("watchdog")
+        print("watchdog: desk resumed on repaired code", flush=True)
+
+
 if __name__ == "__main__":
     SVC.s.validate_policy()
     if not SVC._meta("orphan_scan_since"):
         SVC._meta("orphan_scan_since", str(time.time()))  # transfers made before the desk existed aren't orphans
     sweeper()
+    lift_watchdog_stop_if_green()
+    watchdog_thread()
     threading.Thread(target=think_ahead, args=(SVC, LLMAgent), kwargs={"wake": WAKE}, daemon=True).start()
     if not OPERATORS:
         sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")

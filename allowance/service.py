@@ -193,6 +193,10 @@ class Service:
     def kill(self, operator, reason="operator stop"):
         with self.s.tx():
             pol = self.s.policy()
+            if pol["killed"] and operator == "watchdog":
+                # The Watchdog never takes over someone else's STOP (it could then lift it).
+                self.s.log("system", "kill_switch_pressed_again", "decided", None, by=operator, kept_reason=pol["killed_reason"])
+                return
             if pol["killed"] and pol["killed_by"] == "system" and operator != "system":
                 # Pressing STOP on top of a system STOP must not lower what it takes to resume
                 # (a system STOP needs two people to clear).
@@ -206,6 +210,8 @@ class Service:
         single_operator_mode is only for a one-token demo setup; it is logged so the receipt shows it."""
         with self.s.tx():
             pol = self.s.policy()
+            if operator == "watchdog" and pol["killed"] and pol["killed_by"] != "watchdog":
+                raise Refused("the Watchdog can only lift a STOP it pressed itself")
             if pol["killed"] and pol["killed_by"] == "system" and not single_operator_mode:
                 if not confirmed_by or confirmed_by == operator:
                     raise Refused("the desk stopped itself; a second person must confirm before it resumes")
