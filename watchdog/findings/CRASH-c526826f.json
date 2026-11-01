@@ -1,0 +1,49 @@
+{
+ "rule": "CRASH",
+ "seed": 20137,
+ "detail": "IntegrityError: UNIQUE constraint failed: payments.incident_id",
+ "steps": [
+  [
+   "open",
+   10000
+  ],
+  [
+   "pay_orig",
+   3,
+   0
+  ],
+  [
+   "provider",
+   3,
+   false,
+   "CHANNEL_TIMEOUT"
+  ],
+  [
+   "sweep"
+  ],
+  [
+   "pay_repl",
+   0
+  ],
+  [
+   "provider",
+   1,
+   false,
+   "TEMPORARY_UNAVAILABLE"
+  ],
+  [
+   "provider",
+   0,
+   true,
+   "SENT"
+  ],
+  [
+   "reconcile",
+   2,
+   true
+  ]
+ ],
+ "found_at": "2026-11-01T17:36:00+00:00",
+ "status": "open",
+ "replay": "python3 -m watchdog.replay watchdog/findings/CRASH-c526826f.json"
+}

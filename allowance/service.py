@@ -39,7 +39,7 @@ from .store import FINAL  # noqa: E402
 REQ_NS = uuid.UUID("5b1e8a0e-6b8f-4d0a-9a51-0a1d5f2c7e11")
 
 
-ALERT_RANK = {"PROVIDER_MISMATCH": 97, "PAID_THEN_FAILED": 92, "DOUBLE_PAID": 100, "BENEFICIARY_CHANGED": 95, "CANCELLED_THEN_PAID": 90, "CANCELLED_LOCALLY_BUT_EXISTS": 85,
+ALERT_RANK = {"CANCELLED_BUT_LIVE": 96, "PROVIDER_MISMATCH": 97, "PAID_THEN_FAILED": 92, "DOUBLE_PAID": 100, "BENEFICIARY_CHANGED": 95, "CANCELLED_THEN_PAID": 90, "CANCELLED_LOCALLY_BUT_EXISTS": 85,
               "PAID_THEN_CANCELLED": 80, "FRAUD_SIGNAL": 70, "OVERDUE_SLA": 40, "FEE_OVER_LIMIT": 10}
 
 
@@ -396,8 +396,10 @@ class Service:
 
     @staticmethod
     def _usable_transfer(t):
-        return (isinstance(t, dict) and isinstance(t.get("status"), str) and t["status"] in IN_FLIGHT + ("PAID", "CANCELLED")
-                and t["status"] not in ("RESERVED", "UNKNOWN") and bool(t.get("id") or t.get("request_id")))
+        return (isinstance(t, dict) and isinstance(t.get("status"), str) and t["status"] in IN_FLIGHT + ("PAID", "CANCELLED", "RETURNED", "REVERSED", "SUSPENDED")
+                and t["status"] not in ("RESERVED", "UNKNOWN") and bool(t.get("id") or t.get("request_id"))
+                and (t.get("failure") is None or (isinstance(t["failure"], dict)
+                     and (t["failure"].get("details") is None or isinstance(t["failure"]["details"], dict)))))
 
     def resend(self, request_id, operator):
         """Operator action for a payment stuck UNKNOWN / RESERVED that Airwallex has never heard of.
@@ -546,6 +548,10 @@ class Service:
         return decision
 
     def close(self, incident_id, operator, note=None):
+        with self.s.tx():  # every check and the close itself in one transaction: a reversal can't land in between
+            self._close_locked(incident_id, operator, note)
+
+    def _close_locked(self, incident_id, operator, note):
         inc = self._incident(incident_id)
         if inc["alert"] and not (note and len(note.strip()) >= 10):
             raise Refused(f"open alert {inc['alert']}: write a short resolution note (what you checked, what happened) to close")
@@ -555,7 +561,7 @@ class Service:
         open_ = [p["request_id"] for p in pays if p["status"] not in FINAL]
         if open_:
             raise Refused("another payment on this incident has no final status yet: " + ", ".join(open_))
-        with self.s.tx():
+        if True:
             self.s.db.execute("UPDATE incidents SET state='RESOLVED' WHERE id=?", (incident_id,))
             self.s.log("operator", "incident_resolved", "operator", incident_id, by=operator, note=note,
                        outcome={p["request_id"]: [p["role"], p["status"], p["failure_type"]] for p in pays})
@@ -685,8 +691,9 @@ class Service:
             self._anomaly(request_id, "PROVIDER_MISMATCH", "Airwallex returned a transfer that does not match ours (" + ", ".join(bad) + ")")
             return False
         status = t.get("status", "UNKNOWN")
-        fail = t.get("failure") or {}
-        ftype = (fail.get("details") or {}).get("type") or t.get("failure_type")
+        fail = t.get("failure") if isinstance(t.get("failure"), dict) else {}
+        det = fail.get("details") if isinstance(fail.get("details"), dict) else {}
+        ftype = det.get("type") or t.get("failure_type")
         # Map the provider's failure *reason* to our retry classes via the message when needed.
         ftype = _classify_failure(fail.get("message"), ftype) if status == "CANCELLED" else None
         prev = self.payment(request_id)
@@ -719,6 +726,13 @@ class Service:
                     # "cancelled" transfer that paid after all). Record the truth and stop everything
                     # on this incident until a person looks.
                     flip = f"{cur}_THEN_{status}"
+                elif source == "provider_get" and cur == "CANCELLED":
+                    # A fresh read says a transfer we saw cancelled is moving again. It may be an out-of-order read,
+                    # so the status is not reopened - but the incident is frozen and alarmed until a later read or a
+                    # person settles it (found by the Watchdog). The sweeper keeps re-reading recent cancellations.
+                    self.s.log("provider", "cancelled_but_live_read", "observed", row["incident_id"], request_id=request_id, got=status)
+                    self._anomaly(request_id, "CANCELLED_BUT_LIVE", f"Airwallex shows a cancelled transfer as {status}")
+                    return
                 else:
                     # Stale / reordered information never reopens a final payment.
                     self.s.log("provider", "late_update_ignored", "observed", row["incident_id"], request_id=request_id, had=cur, got=status)
@@ -730,12 +744,14 @@ class Service:
                 " updated_at=CASE WHEN ? THEN ? ELSE updated_at END WHERE request_id=?",
                 (status, source, provider_id, failure_type, failure_message, fee, self.now(), 1 if changed else 0, self.now(), request_id),
             )
-        if flip:
-            self._anomaly(request_id, flip, f"Airwallex changed a final status: {cur} -> {status}")
-            if status == "PAID":
-                paid = self.s.q("SELECT request_id FROM payments WHERE incident_id=? AND status='PAID'", row["incident_id"])
-                if len(paid) > 1:
-                    self._anomaly(request_id, "DOUBLE_PAID", "two transfers on this incident are PAID - ask the supplier to refund one")
+            # The alarm is raised INSIDE the same transaction as the status change: no other thread can see
+            # the new status (e.g. CANCELLED after PAID) before the incident is frozen for a person to look.
+            if flip:
+                self._anomaly(request_id, flip, f"Airwallex changed a final status: {cur} -> {status}")
+                if status == "PAID":
+                    paid = self.s.q("SELECT request_id FROM payments WHERE incident_id=? AND status='PAID'", row["incident_id"])
+                    if len(paid) > 1:
+                        self._anomaly(request_id, "DOUBLE_PAID", "two transfers on this incident are PAID - ask the supplier to refund one")
 
     def _anomaly(self, request_id, code, detail):
         row = self.s.one("SELECT incident_id, anomaly FROM payments WHERE request_id=?", request_id)
@@ -783,7 +799,7 @@ class Service:
         with self.s.lock:
             self.s.db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
 
-    def sweep(self, stale_after=600, sla=72 * 3600, paid_watch=30 * 86400):
+    def sweep(self, stale_after=600, sla=72 * 3600, paid_watch=30 * 86400, cancel_watch=72 * 3600):
         """Background safety net: re-read anything uncertain or in flight that hasn't been checked
         lately, and raise an alert when a transfer sits in flight past the SLA."""
         out = []
@@ -798,6 +814,14 @@ class Service:
                 if inc["alert"] != "OVERDUE_SLA":
                     self.s.log("policy", "sla_breached", "decided", p["incident_id"], request_id=p["request_id"], hours=int((self.now() - p["created_at"]) / 3600))
                     self._alert(p["incident_id"], "OVERDUE_SLA")
+        # CANCELLED is not proof either: a "cancelled" transfer can still pay out, and a payment we released
+        # locally can turn up at Airwallex after all. Keep re-reading recent ones (found by the Watchdog).
+        for p in self.s.q("SELECT * FROM payments WHERE status='CANCELLED' AND updated_at>?", self.now() - cancel_watch):
+            if self.now() - (p["checked_at"] or p["updated_at"]) >= min(stale_after, 3600):
+                try:
+                    out.append(self.reconcile(p["request_id"]))
+                except Exception as e:
+                    self.s.log("system", "sweep_error", "decided", p["incident_id"], request_id=p["request_id"], error=str(e)[:200])
         # PAID is provisional: Airwallex can still move it to FAILED. Keep re-reading for a few days.
         for p in self.s.q("SELECT * FROM payments WHERE status='PAID' AND created_at>?", self.now() - paid_watch):
             if self.now() - (p["checked_at"] or p["updated_at"]) >= (3600 if self.now() - p["created_at"] < 86400 else 6 * 3600):

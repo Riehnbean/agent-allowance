@@ -1,0 +1,36 @@
+{
+ "rule": "UNTRACKED_MONEY",
+ "seed": 405,
+ "detail": "db710054 is SENT at Airwallex but the desk says CANCELLED with no alarm, even after a sweep",
+ "steps": [
+  [
+   "open",
+   10000
+  ],
+  [
+   "pay_orig",
+   3,
+   0
+  ],
+  [
+   "provider",
+   2,
+   true,
+   "CANCELLED"
+  ],
+  [
+   "reconcile",
+   2,
+   true
+  ],
+  [
+   "provider",
+   0,
+   true,
+   "SENT"
+  ]
+ ],
+ "found_at": "2026-11-01T17:28:55+00:00",
+ "status": "open",
+ "replay": "python3 -m watchdog.replay watchdog/findings/UNTRACKED_MONEY-e51aa041.json"
+}

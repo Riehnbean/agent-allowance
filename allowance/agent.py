@@ -27,7 +27,7 @@ REDIRECT_PATTERNS = re.compile(
     r"(new|updated|changed|different)\s+(bank|account|routing|iban|swift|details)|pay\s+(to|into)\s+(this|our new)|"
     r"account\s+(number|no\.?)\s*[:#]?\s*\d{4,}|routing\s*[:#]?\s*\d{6,}|urgent(ly)?\s+wire|gift\s*card|crypto|bitcoin|usdt|"
     # instructions aimed at the AI itself (prompt injection) are treated like a scam attempt
-    r"ignore\s+(all\s+|any\s+)?(previous|prior|above|your)\s+(rules|instructions)|system\s+override|admin\s+mode|you\s+are\s+now\s+|"
+    r"(ignore|disregard|forget|override)\s+(all\s+|any\s+)?(of\s+)?(your\s+|the\s+|my\s+)?(previous\s+|prior\s+|above\s+|earlier\s+|system\s+)?(rules|instructions|prompt|guidelines)|system\s+override|admin\s+mode|you\s+are\s+now\s+|"
     r"developer\s+mode|\{\s*\"?decision\"?\s*:",
     re.I,
 )
@@ -47,7 +47,8 @@ def service_refused(msg):
 _WORD_DIGITS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
                 "seven": "7", "eight": "8", "nine": "9"}
 _WORD_DIGIT_RUN = re.compile(r"\b(?:(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)\b[\s,-]*){4,}", re.I)
-_TAGS = re.compile(r"<[^>]{1,40}>|[*_`~]{1,3}")
+_TAGS = re.compile(r"<[^>]{1,300}>|[*_`~]{1,3}")
+_BLOCK_TAGS = re.compile(r"<\s*/?\s*(br|p|div|li|ul|ol|tr|td|th|table|h[1-6]|hr|blockquote|section)\b[^>]{0,300}>", re.I)
 _INVISIBLE = re.compile(r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u206a-\u206f\ufeff]")
 _B64 = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=])")
 _IBAN_SPACED = re.compile(r"\b([A-Z]{2}\d{2})((?:[\s.-]?[A-Z0-9]{2,4}){3,8})\b", re.I)
@@ -63,11 +64,13 @@ def normalize(text):
     import html
     import unicodedata
     t = text or ""
+    t = unicodedata.normalize("NFKC", t)  # full-width digits first, so &#１０１; becomes a real entity
     for _ in range(2):  # double-encoded entities (&amp;#101;) too
         t = html.unescape(t)
     t = unicodedata.normalize("NFKC", t)
     t = _INVISIBLE.sub("", t)
-    t = _TAGS.sub("", t)  # n<b>ew</b> -> new ; **new** **bank** -> new bank
+    t = _BLOCK_TAGS.sub(" ", t)  # <br>, <p>, <div> separate words
+    t = _TAGS.sub("", t)  # inline tags and markdown join: n<b>ew</b> -> new ; **new** **bank** -> new bank
     out = []
     for ch in t:
         if ch.isdigit() and not ch.isascii():
@@ -88,7 +91,11 @@ def normalize(text):
             raw = base64.b64decode(m.group(0) + "=" * (-len(m.group(0)) % 4), validate=False).decode("utf-8")
         except Exception:
             return m.group(0)
-        return m.group(0) + " (decoded: " + raw + ")" if raw.isprintable() and raw.strip() else m.group(0)
+        flat = re.sub(r"[\r\n\t]+", " ", raw)
+        if not (flat.isprintable() and flat.strip()):
+            return m.group(0)
+        # decoded text is normalized too (spelled digits etc.) and wrapped in markers that its own text can't close
+        return m.group(0) + " \u27e6decoded: " + normalize(flat) + "\u27e7"
     t = _B64.sub(b64, t)
     return re.sub(r"[ \t]+", " ", t)
 
@@ -96,7 +103,7 @@ def normalize(text):
 DESTINATION_PATTERNS = re.compile(
     r"(remit|send|pay|transfer|wire|deposit)\w*\s+(it\s+|the\s+\w+\s+)?(to|into)\s+(this\s+|the\s+|our\s+)?(account|iban|bank|acct)|"
     r"\b(account|acct|iban)\s*(number|no\.?)?\s*[:#]?\s*[A-Z]{0,2}\d{6,}|\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b|"
-    r"(decode|decoded|base64)\b.{0,40}(destination|account|bank|payment)|\(decoded:",
+    r"(decode|decoded|base64)\b.{0,40}(destination|account|bank|payment)|\u27e6decoded:[^\u27e7]*\b(account|acct|iban|routing|bank)\b",
     re.I,
 )
 
@@ -113,7 +120,10 @@ def fraud_signals(messages):
     for m in messages or []:
         n = normalize(m)
         # also check a spaced variant (markup between whole words) - either reading counts
-        spaced = normalize(_TAGS.sub(" ", _INVISIBLE.sub("", m or "")))
+        import html as _html
+        import unicodedata as _ud
+        raw = _html.unescape(_html.unescape(_ud.normalize("NFKC", m or "")))
+        spaced = normalize(_TAGS.sub(" ", _INVISIBLE.sub("", raw)))
         for variant in (n, spaced):
             for g in REDIRECT_PATTERNS.finditer(variant):
                 hits.append(g.group(0))
@@ -255,7 +265,7 @@ def redact(text):
     scam wording, so the model loses nothing it needs."""
     text = normalize(text)  # spelled-out, spaced, dashed, entity, invisible-char and base64 forms become plain first
     # an encoded blob that decoded to readable text goes entirely: the original AND its decoding
-    text = re.sub(r"[A-Za-z0-9+/]{16,}={0,2} \(decoded: [^)]*\)", "[encoded text removed]", text)
+    text = re.sub(r"[A-Za-z0-9+/]{16,}={0,2} \u27e6decoded: .*?\u27e7", "[encoded text removed]", text, flags=re.S)
     text = _IBAN.sub("[account removed]", text)
     text = _LONG_NUM.sub("[number removed]", text)
     return _EMAIL.sub("[email removed]", text)
