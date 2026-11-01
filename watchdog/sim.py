@@ -18,6 +18,7 @@ from allowance.store import Store  # noqa: E402
 from tests.test_allowance import BEN, FakeAirwallex, bank  # noqa: E402
 
 EVIL = "ben-not-approved"
+EUR_BEN = "ben-eur-holz"
 RETRYABLE_FAIL = ["CHANNEL_TIMEOUT", "TEMPORARY_UNAVAILABLE"]
 HARD_FAIL = ["ACCOUNT_CLOSED", "INCORRECT_ACCOUNT_NUMBER"]
 
@@ -72,8 +73,14 @@ class World:
         self.fake.bens[BEN] = bank()
         self.fake.bens[EVIL] = bank(name="Not Maple", acct="999900002222")
         self.svc = Service(Store(os.path.join(self.dir, "w.db")), self.fake, clock=lambda: self.t)
-        self.svc.s.init_policy("USD", per_tx_cap=100_000, daily_cap=200_000)
+        self.fake.now = lambda: self.t
+        self.svc.s.init_policy("USD", per_tx_cap=100_000, daily_cap=200_000, fx_currencies="EUR", allowed_countries="US,DE")
         self.svc.allow_beneficiary(BEN, "Maple Lumber Supply LLC", "****6789", "zach")
+        eur = bank(name="Holz Werk GmbH", acct="532013000")
+        eur["beneficiary"]["bank_details"].update({"account_currency": "EUR", "bank_country_code": "DE"})
+        self.fake.bens[EUR_BEN] = eur
+        self.svc.allow_beneficiary(EUR_BEN, "Holz Werk GmbH", "IBAN ****3000", "zach")
+        self.bad_quotes = []         # queued broken FX quotes for the next fx_quote calls
         self.incidents = []
         self.bad_reads = []          # queued broken replies for the next get_transfer calls
         self.in_race = False
@@ -85,9 +92,32 @@ class World:
     def _wrap_provider(self):
         real_create, real_get = self.fake.create_transfer, self.fake.get_transfer
 
-        def create(request_id, beneficiary_id, amount, currency, reference, method="LOCAL"):
-            self._check_create(request_id, beneficiary_id, amount)
-            t = real_create(request_id, beneficiary_id, amount, currency, reference, method)
+        real_quote = self.fake.fx_quote
+
+        def quote(sell, buy, amt, validity="MIN_15"):
+            q = real_quote(sell, buy, amt, validity)
+            if self.bad_quotes:
+                kind = self.bad_quotes.pop(0)
+                if kind == "wrong_amount":
+                    q["buy_amount"] = q["buy_amount"] + 1
+                elif kind == "incomplete":
+                    q.pop("sell_amount", None)
+                elif kind == "markup":
+                    q["client_rate"] = q["mid_rate"] * 1.05; q["sell_amount"] = round(amt * q["client_rate"]) / 100
+                elif kind == "short":
+                    import datetime
+                    q["valid_to_at"] = datetime.datetime.fromtimestamp(self.t + 20, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000")
+                elif kind == "wrong_pair":
+                    q["buy_currency"] = "GBP"
+                elif kind == "cheap_lie":  # quote claims a far lower dollar price than its rate implies
+                    q["sell_amount"] = q["sell_amount"] / 2
+                self.fake.quotes[q["quote_id"]] = q
+            return q
+        self.fake.fx_quote = quote
+
+        def create(request_id, beneficiary_id, amount, currency, reference, method="LOCAL", **kw):
+            self._check_create(request_id, beneficiary_id, amount, currency, kw)
+            t = real_create(request_id, beneficiary_id, amount, currency, reference, method, **kw)
             self.fake.by_req[request_id]["_ben"] = beneficiary_id
             return t
 
@@ -115,8 +145,22 @@ class World:
 
         self.fake.create_transfer, self.fake.get_transfer = create, get
 
-    def _check_create(self, request_id, ben, amount):
+    def _check_create(self, request_id, ben, amount, currency="USD", kw=None):
         """Rules checked at the instant money would move."""
+        kw = kw or {}
+        cost = amount
+        if currency != "USD":
+            q = self.fake.quotes.get(kw.get("quote_id") or "-")
+            if not q:
+                self.fail("FX_WITHOUT_QUOTE", f"{currency} transfer sent without a locked quote")
+                return
+            import datetime
+            exp = datetime.datetime.strptime(q["valid_to_at"], "%Y-%m-%dT%H:%M:%S%z").timestamp()
+            if q["buy_currency"] != currency or round(q["buy_amount"] * 100) != amount or exp <= self.t:
+                self.fail("BAD_QUOTE_USED", f"transfer used a quote that is expired or not for {currency} {amount}")
+            cost = round(amount * q["client_rate"])  # what Airwallex will really take, whatever sell_amount claimed
+            if q["client_rate"] > q["mid_rate"] * 1.015 + 1e-9:
+                self.fail("FX_MARKUP_OVER_LIMIT", f"rate {q['client_rate']} vs mid {q['mid_rate']}")
         s = self.svc.s
         row = s.one("SELECT incident_id, role FROM payments WHERE request_id=?", request_id)
         if not row:
@@ -128,8 +172,8 @@ class World:
         elif allow["details_hash"] != details_hash(self.fake.bens.get(ben)):
             self.fail("PAYEE_DETAILS_CHANGED", f"transfer to {ben} whose bank details differ from the approved ones")
         pol = s.policy()
-        if amount > pol["per_tx_cap"]:
-            self.fail("OVER_PER_TX_CAP", f"{amount} > {pol['per_tx_cap']}")
+        if cost > pol["per_tx_cap"]:
+            self.fail("OVER_PER_TX_CAP", f"{cost} (home currency) > {pol['per_tx_cap']}")
         if pol["killed"] and not self.in_race:
             self.fail("SENT_WHILE_STOPPED", "transfer created while STOP was on")
         live = [t for r, t in self.fake.by_req.items() if r != request_id and t["status"] != "CANCELLED"
@@ -148,7 +192,7 @@ class World:
             row = s.one("SELECT status, incident_id, anomaly FROM payments WHERE request_id=?", r)
             if t["status"] == "CANCELLED":
                 continue
-            live_amount += t["amount"]
+            live_amount += round(float(t.get("amount_payer_pays") or t["amount"] / 100) * 100)
             inc = s.one("SELECT alert FROM incidents WHERE id=?", row["incident_id"]) if row else None
             if row and row["status"] == "CANCELLED" and not (row["anomaly"] or (inc and inc["alert"])):
                 # The desk may legitimately not know YET (it hasn't re-read). It must know after a sweep.
@@ -165,6 +209,14 @@ class World:
             self.fail("OVER_DAILY_CAP", f"{live_amount} live at Airwallex > daily cap {pol['daily_cap']}")
 
     def _recheck_untracked(self):
+        """The rule: once Airwallex answers properly, the desk must know. Queued broken replies are used up first
+        (each sweep re-reads), then one sweep against a healthy provider must leave nothing untracked."""
+        for _ in range(6):
+            if not self.bad_reads:
+                break
+            self.svc.sweep(stale_after=0)
+        self.bad_reads = []
+        self.svc.sweep(stale_after=0)
         s = self.svc.s
         for r in self.notes:
             t = self.fake.by_req[r]
@@ -191,21 +243,26 @@ def do(w, step):
     if op == "open":
         n = len(w.incidents) + 1
         w.incidents.append(svc.open_incident("Maple Lumber", f"INV-W{n}", BEN, a[0], "USD", deadline=w.t + 7200, allow_similar=True))
+    elif op == "open_eur":
+        n = len(w.incidents) + 1
+        w.incidents.append(svc.open_incident("Holz Werk", f"EU-W{n}", EUR_BEN, a[0], "EUR", deadline=w.t + 7200, allow_similar=True))
+    elif op == "bad_quote":
+        w.bad_quotes.append(a[0])
     elif op == "pay_orig":
         iid = _inc(w, a[0])
         if iid is None:
             return
-        ben = EVIL if a[1] else BEN
-        ap = svc.approve(iid, "original", "zach", beneficiary_id=ben)
         inc = svc._incident(iid)
-        svc.pay(ap, "original", ben, inc["amount"], "USD")
+        ben = EVIL if a[1] else inc["beneficiary_id"]
+        ap = svc.approve(iid, "original", "zach", beneficiary_id=ben)
+        svc.pay(ap, "original", ben, inc["amount"], inc["currency"])
     elif op == "pay_repl":
         iid = _inc(w, a[0])
         if iid is None:
             return
         inc = svc._incident(iid)
         ap = svc.approve(iid, "replacement", "zach")
-        svc.pay(ap, "replacement", inc["beneficiary_id"], inc["amount"], "USD")
+        svc.pay(ap, "replacement", inc["beneficiary_id"], inc["amount"], inc["currency"])
     elif op == "provider":
         iid = _inc(w, a[0])
         p = iid and _last_pay(w, iid, first=a[1])
@@ -287,13 +344,17 @@ def do(w, step):
 
 def gen(seed, n=25):
     rnd = random.Random(seed)
-    steps = [("open", rnd.choice([10_000, 25_000, 40_000, 60_000, 90_000]))]
+    steps = [("open_eur" if rnd.random() < .3 else "open", rnd.choice([10_000, 25_000, 40_000, 60_000, 90_000]))]
 
     def one():
         k = rnd.random()
         i = rnd.randrange(4)
-        if k < .10:
+        if k < .06:
             return ("open", rnd.choice([5_000, 25_000, 49_000, 60_000, 99_000, 150_000]))
+        if k < .10:
+            return ("open_eur", rnd.choice([5_000, 25_000, 44_000, 80_000, 95_000]))
+        if rnd.random() < .04:
+            return ("bad_quote", rnd.choice(["wrong_amount", "incomplete", "markup", "short", "wrong_pair", "cheap_lie"]))
         if k < .22:
             return ("pay_orig", i, int(rnd.random() < .12))
         if k < .32:

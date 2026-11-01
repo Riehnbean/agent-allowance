@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS policy(
   max_attempts INTEGER NOT NULL DEFAULT 3,               -- original + at most 2 replacements (each failure burns a fee)
   max_incidents_per_hour INTEGER NOT NULL DEFAULT 30,
   allowed_countries TEXT NOT NULL DEFAULT 'US',
-  dual_approval_over INTEGER NOT NULL DEFAULT 50000
+  dual_approval_over INTEGER NOT NULL DEFAULT 50000,
+  fx_currencies TEXT NOT NULL DEFAULT '',               -- invoice currencies paid via a locked Airwallex FX quote (e.g. 'EUR')
+  max_fx_spread_bps INTEGER NOT NULL DEFAULT 150         -- refuse a quote marked up more than 1.5% over the mid-market rate
 );
 CREATE TABLE IF NOT EXISTS beneficiaries(
   id TEXT PRIMARY KEY,            -- Airwallex beneficiary id
@@ -133,6 +135,13 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        for table, col in (("policy", "fx_currencies TEXT NOT NULL DEFAULT ''"), ("policy", "max_fx_spread_bps INTEGER NOT NULL DEFAULT 150"),
+                           ("payments", "cost_amount INTEGER"), ("payments", "fx_quote_id TEXT"), ("payments", "fx_rate REAL"),
+                           ("payments", "fx_expires_at REAL")):
+            try:  # older databases: add the FX columns in place
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
 
     # transactions -----------------------------------------------------------
     def tx(self):
@@ -193,7 +202,7 @@ class Store:
             (currency, per_tx_cap, daily_cap),
         )
         for k, v in extra.items():
-            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over", "changed_payee_cap", "changed_payee_window", "max_attempts", "max_incidents_per_hour", "allowed_countries"):
+            if k in ("per_supplier_daily_cap", "max_payments_per_hour", "max_fee", "dual_approval_over", "changed_payee_cap", "changed_payee_window", "max_attempts", "max_incidents_per_hour", "allowed_countries", "fx_currencies", "max_fx_spread_bps"):
                 self.db.execute(f"UPDATE policy SET {k}=? WHERE id=1", (v,))
 
     def committed_today_for(self, beneficiary_id, now=None):
@@ -245,8 +254,9 @@ class Store:
 #   CANCELLED  -> the fee only (a failed transfer's fee is not refunded; locally cancelled ones have fee 0)
 #   anything else (reserved / uncertain / in flight) -> amount + the larger of the reported fee and the
 #   policy's max_fee, because the real fee isn't known until Airwallex says so.
-_COST = ("CASE WHEN {p}status='CANCELLED' THEN {p}fee WHEN {p}status='PAID' THEN {p}amount+{p}fee"
-         " ELSE {p}amount+MAX({p}fee,(SELECT max_fee FROM policy WHERE id=1)) END")
+# Cost is always in the policy (home) currency: a foreign-currency payment counts its locked FX cost, not its face value.
+_COST = ("CASE WHEN {p}status='CANCELLED' THEN {p}fee WHEN {p}status='PAID' THEN COALESCE({p}cost_amount,{p}amount)+{p}fee"
+         " ELSE COALESCE({p}cost_amount,{p}amount)+MAX({p}fee,(SELECT max_fee FROM policy WHERE id=1)) END")
 
 
 def _chain(prev, at, incident_id, actor, kind, provenance, body):

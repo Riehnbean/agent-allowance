@@ -34,13 +34,37 @@ class FakeAirwallex:
         self.lose_response_next = False  # transfer IS created, but the caller sees a timeout
         self.lock = threading.Lock()
 
-    def create_transfer(self, request_id, beneficiary_id, amount_minor, currency, reference, method="LOCAL"):
+    fx_rate, fx_mid, fx_valid = 1.125853, 1.11599, 900  # EURUSD like the real sandbox quote on Nov 1
+
+    def fx_quote(self, sell_currency, buy_currency, buy_amount_minor, validity="MIN_15"):
+        import datetime
+        self.quotes = getattr(self, "quotes", {})
+        qid = str(uuid.uuid4())
+        sell = round(buy_amount_minor * self.fx_rate)
+        exp = datetime.datetime.fromtimestamp(self.clock() + self.fx_valid, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000")
+        q = {"quote_id": qid, "sell_currency": sell_currency, "buy_currency": buy_currency, "buy_amount": buy_amount_minor / 100,
+             "sell_amount": sell / 100, "client_rate": self.fx_rate, "mid_rate": self.fx_mid, "valid_to_at": exp}
+        self.quotes[qid] = q
+        return dict(q)
+
+    def clock(self):
+        return getattr(self, "now", None)() if callable(getattr(self, "now", None)) else __import__("time").time()
+
+    def create_transfer(self, request_id, beneficiary_id, amount_minor, currency, reference, method="LOCAL",
+                        source_currency=None, quote_id=None):
         with self.lock:
             self.calls += 1
             if request_id in self.by_req:
                 return dict(self.by_req[request_id])  # duplicate_request_id -> original returned by adapter
+            payer = amount_minor
+            if quote_id:
+                q = getattr(self, "quotes", {}).get(quote_id)
+                if not q or q["buy_currency"] != currency or q["sell_currency"] != source_currency:
+                    raise ProviderError(400, "invalid_quote", "quote does not match this transfer")
+                payer = round(q["sell_amount"] * 100)
             t = {"id": str(uuid.uuid4()), "request_id": request_id, "status": "SCHEDULED", "amount": amount_minor,
-                 "fee_amount": self.fee / 100, "fee_paid_by": "PAYER", "amount_payer_pays": (amount_minor + self.fee) / 100}
+                 "transfer_currency": currency, "source_currency": source_currency or currency, "quote_id": quote_id,
+                 "fee_amount": self.fee / 100, "fee_paid_by": "PAYER", "amount_payer_pays": (payer + self.fee) / 100}
             self.by_req[request_id] = t
             self.by_id[t["id"]] = t
             if self.lose_response_next:

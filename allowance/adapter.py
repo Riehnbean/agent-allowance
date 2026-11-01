@@ -82,18 +82,27 @@ class Airwallex:
     def create_beneficiary(self, payload):
         return self._raw("POST", "/beneficiaries/create", payload)
 
-    def create_transfer(self, request_id, beneficiary_id, amount_minor, currency, reference, method="LOCAL"):
-        """Submit one transfer. amount is integer minor units (cents) -> exact decimal string."""
+    def fx_quote(self, sell_currency, buy_currency, buy_amount_minor, validity="MIN_15"):
+        """Lock an exchange rate: Airwallex holds this price until valid_to_at (POST /fx/quotes/create)."""
+        return self._raw("POST", "/fx/quotes/create", {"sell_currency": sell_currency, "buy_currency": buy_currency,
+                                                       "buy_amount": minor_to_str(buy_amount_minor), "validity": validity})
+
+    def create_transfer(self, request_id, beneficiary_id, amount_minor, currency, reference, method="LOCAL",
+                        source_currency=None, quote_id=None):
+        """Submit one transfer. amount is integer minor units (cents) -> exact decimal string.
+        Foreign currency: funded from source_currency at the rate locked by quote_id."""
         body = {
             "request_id": request_id,
             "beneficiary_id": beneficiary_id,
             "transfer_amount": minor_to_str(amount_minor),
             "transfer_currency": currency,
-            "source_currency": currency,
+            "source_currency": source_currency or currency,
             "transfer_method": method,
             "reference": reference[:140],
             "reason": "payment_to_supplier",
         }
+        if quote_id:
+            body["quote_id"] = quote_id
         try:
             return self._raw("POST", "/transfers/create", body)
         except ProviderError as e:

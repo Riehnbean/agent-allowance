@@ -227,8 +227,11 @@ class Service:
         try:
             if role == "replacement":
                 self._fresh_read_before_replacement(approval_id)
+            quote = None
+            if currency != self.s.policy()["currency"]:
+                quote = self._lock_fx(approval_id, currency, amount)
             try:
-                return self._pay(None, approval_id, role, beneficiary_id, amount, currency)
+                return self._pay(None, approval_id, role, beneficiary_id, amount, currency, quote=quote)
             except sqlite3.IntegrityError as e:
                 raise Refused(f"database duplicate lock: {e}") from None
         except Refused as e:
@@ -254,23 +257,61 @@ class Service:
             if after["status_source"] != "provider_get" or after["checked_at"] is None or self.now() - after["checked_at"] > 30:
                 raise Refused("could not get a fresh Airwallex status for the earlier payment - no replacement sent")
 
-    def _pay(self, request_id, approval_id, role, beneficiary_id, amount, currency):
+    def _lock_fx(self, approval_id, currency, amount):
+        """Ask Airwallex for a locked rate for exactly this invoice amount and check the quote itself:
+        right pair and amount, an id, enough time left, and a markup over mid-market within policy."""
+        pol = self.s.policy()
+        allowed = {c.strip() for c in (pol["fx_currencies"] or "").split(",") if c.strip()}
+        if currency not in allowed:
+            raise Refused(f"{currency} is not an allowed payment currency (allowed: {', '.join([pol['currency']] + sorted(allowed))})")
+        ap = self.s.one("SELECT incident_id FROM approvals WHERE id=?", approval_id)
+        iid = ap["incident_id"] if ap else None
+        try:
+            q = self.p.fx_quote(pol["currency"], currency, amount)
+        except (Ambiguous, ProviderError) as e:
+            raise Refused(f"could not get a locked exchange rate from Airwallex ({e}) - nothing reserved or sent") from None
+        import datetime as _dt
+        try:
+            cost = str_to_minor(q["sell_amount"])
+            rate = float(q["client_rate"])
+            mid = float(q.get("mid_rate") or 0)
+            ok_pair = (q["sell_currency"], q["buy_currency"]) == (pol["currency"], currency) and str_to_minor(q["buy_amount"]) == amount
+            expires = _dt.datetime.strptime(q["valid_to_at"], "%Y-%m-%dT%H:%M:%S%z").timestamp()
+            qid = str(q["quote_id"])
+        except (KeyError, TypeError, ValueError):
+            raise Refused("Airwallex returned an incomplete exchange-rate quote - nothing reserved or sent") from None
+        if not ok_pair or not qid or rate <= 0 or cost <= 0:
+            raise Refused("the exchange-rate quote does not match this invoice (currency pair or amount) - nothing sent")
+        if abs(cost - round(amount * rate)) > 2:
+            raise Refused("the quote's price and rate disagree - nothing sent")
+        spread = (rate / mid - 1) * 10000 if mid > 0 else None
+        if spread is not None and spread > pol["max_fx_spread_bps"]:
+            raise Refused(f"exchange-rate markup {spread:.0f} bps is over the {pol['max_fx_spread_bps']} bps limit - nothing sent")
+        if expires - self.now() < 60:
+            raise Refused("the locked exchange rate expires in under a minute - try again")
+        self.s.log("provider", "fx_quote_locked", "observed", iid, quote_id=qid, pair=f"{pol['currency']}->{currency}", amount=amount,
+                   cost=cost, rate=rate, mid_rate=mid or None, spread_bps=round(spread, 1) if spread is not None else None, expires_at=expires)
+        return {"quote_id": qid, "cost": cost, "rate": rate, "expires_at": expires}
+
+    def _pay(self, request_id, approval_id, role, beneficiary_id, amount, currency, quote=None):
         with self.s.tx():
             ap = self.s.one("SELECT * FROM approvals WHERE id=?", approval_id)
             if not ap:
                 raise Refused("no such approval")
             iid = ap["incident_id"]
             inc = self._incident(iid)
-            self._check(ap, inc, role, beneficiary_id, amount, currency)
+            self._check(ap, inc, role, beneficiary_id, amount, currency, cost=quote["cost"] if quote else None)
             # Deterministic idempotency key: (incident, attempt number). The same attempt always maps to
             # the same request_id, so even a crash before this row commits can't mint a second transfer.
             attempt = self.s.one("SELECT COUNT(*) n FROM payments WHERE incident_id=?", iid)["n"] + 1
             request_id = str(uuid.uuid5(REQ_NS, f"{self._desk_id()}:incident:{iid}:attempt:{attempt}"))
             now = self.now()
             self.s.db.execute(
-                "INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,status_source,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,?,?, 'RESERVED','none',?,?)",
-                (request_id, iid, role, approval_id, beneficiary_id, amount, currency, now, now),
+                "INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,status_source,created_at,updated_at,"
+                "cost_amount,fx_quote_id,fx_rate,fx_expires_at)"
+                " VALUES(?,?,?,?,?,?,?, 'RESERVED','none',?,?,?,?,?,?)",
+                (request_id, iid, role, approval_id, beneficiary_id, amount, currency, now, now,
+                 quote["cost"] if quote else amount, quote and quote["quote_id"], quote and quote["rate"], quote and quote["expires_at"]),
             )
             self.s.db.execute("UPDATE approvals SET used_by_request=? WHERE id=?", (request_id, approval_id))
             self.s.log("policy", "payment_reserved", "decided", iid, request_id=request_id, role=role, amount=amount)
@@ -311,8 +352,13 @@ class Service:
             # Stamp the attempt inside the same lock: release() refuses for 15 minutes after this.
             self.s.db.execute("UPDATE payments SET updated_at=? WHERE request_id=?", (self.now(), request_id))
         inc = self._incident(iid)
+        fx = {}
+        if pay["fx_quote_id"]:
+            if self.now() > (pay["fx_expires_at"] or 0) - 15:
+                block("FX_QUOTE_EXPIRED", "the locked exchange rate expired before sending - approve again for a fresh rate")
+            fx = {"source_currency": self.s.policy()["currency"], "quote_id": pay["fx_quote_id"]}
         try:
-            t = self.p.create_transfer(request_id, pay["beneficiary_id"], pay["amount"], pay["currency"], f"{inc['invoice']} {pay['role']}")
+            t = self.p.create_transfer(request_id, pay["beneficiary_id"], pay["amount"], pay["currency"], f"{inc['invoice']} {pay['role']}", **fx)
         except Ambiguous as e:
             self._set(request_id, "UNKNOWN", "none")
             self.s.log("provider", "submit_ambiguous", "observed", iid, request_id=request_id, error=str(e))
@@ -603,8 +649,12 @@ class Service:
             raise Refused("no such incident")
         return inc
 
-    def _check(self, ap, inc, role, beneficiary_id, amount, currency):
+    def _check(self, ap, inc, role, beneficiary_id, amount, currency, cost=None):
         pol = self.s.policy()
+        if currency != pol["currency"] and cost is None:
+            raise Refused("a foreign-currency payment needs a locked exchange rate first")
+        face = amount
+        amount = cost if cost is not None else amount  # every cap below is in the home currency
         if pol["killed"]:
             raise Refused("kill switch is on")
         if inc["state"] != "OPEN":
@@ -615,7 +665,7 @@ class Service:
             raise Refused(f"approval is for the {ap['role']} payment, not the {role}")
         if self.now() >= ap["expires_at"]:
             raise Refused("approval expired")
-        if (ap["beneficiary_id"], ap["amount"], ap["currency"]) != (beneficiary_id, amount, currency):
+        if (ap["beneficiary_id"], ap["amount"], ap["currency"]) != (beneficiary_id, face, currency):
             raise Refused("terms differ from what the operator approved (beneficiary, amount or currency)")
         ben = self.s.one("SELECT * FROM beneficiaries WHERE id=?", beneficiary_id)
         if not ben:
@@ -624,12 +674,13 @@ class Service:
             raise Refused("the payee's verified bank details changed after this approval was given - approve again")
         if ben["details_changed_at"] and self.now() - ben["details_changed_at"] < pol["changed_payee_window"] and amount > pol["changed_payee_cap"]:
             raise Refused(f"this payee's bank details changed recently - payments are capped at {pol['changed_payee_cap']/100:.2f} for {pol['changed_payee_window']//3600}h (send a small test payment first)")
-        if currency != pol["currency"]:
+        fx_ok = {c.strip() for c in (pol["fx_currencies"] or "").split(",") if c.strip()}
+        if currency != pol["currency"] and currency not in fx_ok:
             raise Refused("currency not allowed")
         if amount > pol["per_tx_cap"]:
             raise Refused("over the per-payment cap")
         day_to_payee = self.s.one(
-            "SELECT COALESCE(SUM(p.amount),0) s FROM payments p WHERE p.status<>'CANCELLED' AND p.created_at>? AND p.beneficiary_id IN "
+            "SELECT COALESCE(SUM(COALESCE(p.cost_amount,p.amount)),0) s FROM payments p WHERE p.status<>'CANCELLED' AND p.created_at>? AND p.beneficiary_id IN "
             "(SELECT id FROM beneficiaries WHERE account_key=(SELECT account_key FROM beneficiaries WHERE id=?) UNION SELECT ?)",
             self.now() - 86400, beneficiary_id, beneficiary_id)["s"]
         cosigned = ap["cosigned_by"] and ap["cosigned_by"] != ap["approved_by"]
@@ -680,6 +731,8 @@ class Service:
             why.append("payee")
         if t.get("transfer_currency") and t["transfer_currency"] != prev["currency"]:
             why.append("currency")
+        if prev["fx_quote_id"] and t.get("source_currency") and t["source_currency"] != self.s.policy()["currency"]:
+            why.append("source currency")
         if t.get("transfer_amount") is not None:
             try:
                 if str_to_minor(t["transfer_amount"]) != prev["amount"]:
@@ -708,8 +761,9 @@ class Service:
             fee = str_to_minor(t["fee_amount"])
         payer_pays = str_to_minor(t["amount_payer_pays"]) if t.get("amount_payer_pays") is not None else None
         self._set(request_id, status, source, provider_id=t.get("id"), failure_type=ftype, failure_message=fail.get("message"), fee=fee)
-        if (fee or 0) > self.s.policy()["max_fee"] or (payer_pays and payer_pays > prev["amount"] + self.s.policy()["max_fee"]):
-            self._anomaly(request_id, "FEE_OVER_LIMIT", f"Airwallex charges {((payer_pays or prev['amount'] + (fee or 0)))/100:.2f} for a {prev['amount']/100:.2f} payment")
+        cost = prev["cost_amount"] or prev["amount"]
+        if (fee or 0) > self.s.policy()["max_fee"] or (payer_pays and payer_pays > cost + self.s.policy()["max_fee"]):
+            self._anomaly(request_id, "FEE_OVER_LIMIT", f"Airwallex charges {((payer_pays or cost + (fee or 0)))/100:.2f} for a payment budgeted at {cost/100:.2f}")
         if prev["status"] != status:
             self.s.log("provider", "status_observed", "observed", prev["incident_id"], request_id=request_id,
                        provider_id=t.get("id"), status=status, previous=prev["status"], failure_type=ftype,
