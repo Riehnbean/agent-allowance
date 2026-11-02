@@ -64,3 +64,6 @@ body.simple .adv{display:none!important}
 .card.story .steps li{counter-increment:s;background:#1f2a35;border-radius:999px;padding:6px 14px;font-size:14px}
 .card.story .steps li::before{content:counter(s);display:inline-block;width:20px;height:20px;border-radius:50%;background:#ff7a45;color:#111;text-align:center;font-weight:700;margin-right:8px;line-height:20px}
 .plaindec{font-size:20px;font-weight:600;margin:6px 0 4px}
+
+.fxbig{font-size:17px;font-weight:700;color:#ff7a45;margin:6px 0}
+@media (min-width:900px){section.card:has(#list){position:sticky;top:12px;align-self:start}}

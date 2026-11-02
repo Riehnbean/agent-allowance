@@ -13,9 +13,12 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ["DEMO"] = "1"
+SANDBOX = "--sandbox" in sys.argv  # same seed, but on the real Airwallex sandbox (needs AIRWALLEX_* keys)
+if not SANDBOX:
+    os.environ["DEMO"] = "1"
 os.environ.setdefault("ALLOWANCE_DB", os.path.join(tempfile.mkdtemp(prefix="allowance-demo-"), "demo.db"))
 os.environ.setdefault("OPERATOR_TOKENS", "zach:zach,jordan:jordan")
 os.environ.setdefault("WATCHDOG_EVERY", "0")  # the self-repair loop is shown from its receipt; run it with python3 -m watchdog.cycle
@@ -31,7 +34,7 @@ svc.s.db.execute("UPDATE policy SET fx_currencies='EUR', allowed_countries='US,D
 
 def seed():
     ben = server.ensure_beneficiary("zach")
-    eur = api.create_beneficiary({"nickname": "Holz Werk GmbH (demo)", "transfer_methods": ["LOCAL"], "beneficiary": {
+    eur = api.create_beneficiary({"request_id": str(uuid.uuid4()), "nickname": "Holz Werk GmbH (demo)", "transfer_methods": ["LOCAL"], "beneficiary": {
         "entity_type": "COMPANY", "company_name": "Holz Werk GmbH", "type": "BANK_ACCOUNT",
         "address": {"country_code": "DE", "city": "Berlin", "street_address": "Hauptstrasse 1", "postcode": "10115"},
         "bank_details": {"account_currency": "EUR", "account_name": "Holz Werk GmbH", "iban": "DE89370400440532013000", "bank_country_code": "DE"}}})["id"]
@@ -57,7 +60,7 @@ def seed():
 if not svc.s.one("SELECT 1 FROM incidents"):
     seed()
 port = os.environ.get("PORT", "8710")
-print(f"\n  Agent Allowance - offline demo (simulated Airwallex, nothing leaves this machine)\n"
+print(f"\n  Agent Allowance - " + ("Airwallex SANDBOX demo (practice money)" if SANDBOX else "offline demo (simulated Airwallex, nothing leaves this machine)") + "\n"
       f"  Open http://127.0.0.1:{port}  and sign in with token:  zach   (second operator: jordan)\n"
       f"  AI: {server.AGENT.nice}\n")
 server.main()

@@ -38,7 +38,7 @@ async function load(quiet) {
   const p = S.policy;
   $("#budget").textContent = `Today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} committed · max ${usd(p.per_tx_cap)} per payment`;
   $("#agentname").textContent = S.agent;
-  $("#agentname").textContent += p.log ? (p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`) : "";
+  if (p.log) $("#agentname").append(el("span", p.log.intact ? "adv" : null, p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`));
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
   const pend = $("#pending"); pend.replaceChildren();
   for (const a of S.pending || []) {
@@ -104,8 +104,8 @@ function render() {
   ag.append(top);
   if (i.decision) {
     ag.append(el("div", "decision d-" + i.decision.decision, i.decision.decision), el("div", "plaindec", PLAIN_DECISION[i.decision.decision] || ""));
-    const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", null, r)); ag.append(ul);
-    ag.append(el("p", "hint", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
+    const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(Second opinion/.test(r) ? "adv" : null, r)); ag.append(ul);
+    ag.append(el("p", "hint adv", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else ag.append(el("p", "hint", "The agent can only pick from: " + i.allowed.join(", ") + ". It cannot pay, approve or change who gets paid."));
   d.append(ag);
 
@@ -117,9 +117,10 @@ function render() {
     const l = el("div"); l.append(el("b", null, p.role === "original" ? "Original" : "Replacement"), pill(p.status));
     if (p.failure_type) l.append(el("span", "fail", p.failure_type + (p.failure_message ? ` - "${p.failure_message}"` : "")));
     if (p.anomaly) l.append(el("span", "fail", "⚠ " + p.anomaly.replace(/_/g, " ")));
-    if (p.fx_quote_id) l.append(el("small", null, `Locked FX: ${money(p.amount, p.currency)} = ${usd(p.cost_amount)} at ${p.fx_rate} (Airwallex quote, counted against USD caps)`));
+    if (p.fx_quote_id) l.append(el("div", "fxbig", `${money(p.amount, p.currency)} = ${usd(p.cost_amount)} - Airwallex rate locked · checked against your ${usd(S.policy.per_tx_cap)} limit`));
+    if (p.fx_quote_id) l.append(el("small", "adv", `Locked FX: ${money(p.amount, p.currency)} = ${usd(p.cost_amount)} at ${p.fx_rate} (Airwallex quote, counted against USD caps)`));
     if (p.fee) l.append(el("small", null, "Airwallex fee " + usd(p.fee)));
-    l.append(el("small", null, `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
+    l.append(el("small", "adv", `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
     const r = el("div", "payacts");
     if (["UNKNOWN", "RESERVED"].includes(p.status)) {
       const rs = el("button", "warnbtn", "Re-send (same request ID)"); rs.title = "Only if Airwallex has never heard of it. Same request ID, all checks run again; Airwallex refuses a true duplicate.";
@@ -130,7 +131,7 @@ function render() {
     }
     const rec = el("button", null, "Check Airwallex"); rec.title = "Reconcile: look this request up at Airwallex"; rec.onclick = () => act(`/api/payments/${p.request_id}/reconcile`, {}, x => "Airwallex says " + x.status); r.append(rec);
     if (!["PAID", "CANCELLED"].includes(p.status) && p.provider_id) {
-      const sim = el("span", "sim"); sim.append(el("small", null, "Sandbox bank simulator:"));
+      const sim = el("span", "sim adv"); sim.append(el("small", null, "Sandbox bank simulator:"));
       if (p.status !== "SENT") { const b = el("button", null, "Bank picks it up (SENT)"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "SENT" }, "Simulated SENT"); sim.append(b); }
       else {
         const b = el("button", null, "Arrives (PAID)"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "PAID" }, "Simulated PAID"); sim.append(b);
@@ -140,7 +141,7 @@ function render() {
       }
       r.append(sim);
     }
-    if (p.status === "PAID" && p.provider_id) { const sim = el("span", "sim"); sim.append(el("small", null, "Sandbox bank simulator:")); const b = el("button", "warnbtn", "Bank returns it days later"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "FAILED", failure_type: "BENEFICIARY_BANK_RETURNED" }, "Simulated a return after PAID"); sim.append(b); r.append(sim); }
+    if (p.status === "PAID" && p.provider_id) { const sim = el("span", "sim adv"); sim.append(el("small", null, "Sandbox bank simulator:")); const b = el("button", "warnbtn", "Bank returns it days later"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "FAILED", failure_type: "BENEFICIARY_BANK_RETURNED" }, "Simulated a return after PAID"); sim.append(b); r.append(sim); }
     row.append(l, r); ps.append(row);
   }
   d.append(ps);

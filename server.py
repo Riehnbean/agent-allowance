@@ -415,7 +415,8 @@ def main():
     sweeper()
     lift_watchdog_stop_if_green()
     watchdog_thread()
-    threading.Thread(target=think_ahead, args=(SVC, LLMAgent), kwargs={"wake": WAKE}, daemon=True).start()
+    if os.environ.get("THINK_AHEAD", "1") != "0":  # set 0 to make the AI answer only when someone clicks "Ask the AI"
+        threading.Thread(target=think_ahead, args=(SVC, LLMAgent), kwargs={"wake": WAKE}, daemon=True).start()
     if not OPERATORS:
         sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
