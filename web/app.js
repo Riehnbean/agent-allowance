@@ -60,6 +60,17 @@ async function load(quiet) {
 }
 
 function pill(status) { return el("span", "pill p-" + status, status); }
+let advanced = false; try { advanced = localStorage.getItem("adv") === "1"; } catch {}
+const PLAIN_STATUS = { RESERVED: "being sent", UNKNOWN: "unclear - checking with Airwallex", CREATED: "on its way", SCHEDULED: "on its way", PROCESSING: "on its way",
+  SENT: "on its way", OVERDUE: "late", PAID: "paid", CANCELLED: "failed", FAILED: "failing" };
+const PLAIN_DECISION = { ESCALATE: "Get a person to check", REPLACE: "Safe to send it again", WAIT: "Wait - it's still on its way", CLOSE: "Done - it was paid" };
+function whatHappened(i) {
+  const last = i.payments[i.payments.length - 1];
+  if (i.alert) return `A safety alarm is on (${i.alert.replace(/_/g, " ").toLowerCase()}). Payments here are frozen until a person checks.`;
+  if (!last) return "Nothing has been sent yet. A person needs to approve the payment first.";
+  const why = last.failure_message ? ` (bank said: "${last.failure_message}")` : "";
+  return `The last payment of ${money(last.amount, last.currency)} is ${PLAIN_STATUS[last.status] || last.status.toLowerCase()}${last.status === "CANCELLED" ? why + ". Nothing was paid" : ""}.`;
+}
 
 function render() {
   for (const b of document.querySelectorAll(".inc")) b.classList.toggle("sel", false);
@@ -72,18 +83,27 @@ function render() {
   if (i.alert) { const al = el("div", "alert"); al.append(el("b", null, "Safety alarm: " + i.alert.replace(/_/g, " ")), el("span", null, " - new payments on this incident are frozen until a person resolves it.")); d.append(al); }
   if (S.policy.killed) { const al = el("div", "alert"); al.append(el("b", null, "STOP is on: "), el("span", null, S.policy.killed_reason || "")); d.append(al); }
 
+  // Plain-English summary, what the supplier said, and the three steps
+  const sum = el("section", "card story");
+  sum.append(el("h3", null, "What happened"), el("p", "plain", whatHappened(i)));
+  const said = (i.events || []).filter(e => e.kind === "supplier_message").slice(0, 2);
+  if (said.length) { sum.append(el("h3", null, "What the supplier said")); for (const e of said) sum.append(el("blockquote", "said", `"${e.body.text}"`)); }
+  const steps = el("ol", "steps");
+  for (const [n, t] of [["1", "Read what happened"], ["2", "Ask the AI what to do"], ["3", "Approve and send - or get a person to check"]]) steps.append(el("li", null, t));
+  sum.append(steps); d.append(sum);
+
   // Agent card
   const ag = el("section", "card agent");
-  const top = el("div", "agtop"); top.append(el("h3", null, "Agent's call"));
+  const top = el("div", "agtop"); top.append(el("h3", null, "The AI's advice"));
   const aiTag = { ready: ["ai-ready", "AI answer ready ✓"], thinking: ["ai-think", "AI is reading the evidence…"], idle: ["ai-think", "AI queued…"] }[i.ai];
   if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
-  const ask = el("button", "primary", "Ask the agent");
+  const ask = el("button", "primary", "Ask the AI");
   ask.onclick = async () => { ask.disabled = true; ask.textContent = "Agent thinking…";
     await act(`/api/incidents/${i.id}/agent`, {}, r => `Agent: ${r.decision} · ${r.agent === "llm" ? (r.model_nice || r.model) : "rulebook"} · ${(r.ms / 1000).toFixed(1)}s`); };
   top.append(ask);
   ag.append(top);
   if (i.decision) {
-    ag.append(el("div", "decision d-" + i.decision.decision, i.decision.decision));
+    ag.append(el("div", "decision d-" + i.decision.decision, i.decision.decision), el("div", "plaindec", PLAIN_DECISION[i.decision.decision] || ""));
     const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", null, r)); ag.append(ul);
     ag.append(el("p", "hint", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else ag.append(el("p", "hint", "The agent can only pick from: " + i.allowed.join(", ") + ". It cannot pay, approve or change who gets paid."));
@@ -149,7 +169,7 @@ function render() {
   d.append(op);
 
   // Try to break it
-  const br = el("section", "card tricks"); br.append(el("h3", null, "Try to break it"));
+  const br = el("section", "card tricks adv"); br.append(el("h3", null, "Try to break it (for testers)"));
   const tb = el("div", "btns");
   const drop = el("button", null, S.drop_armed ? "Next reply will be lost ✓" : "Lose the next Airwallex reply"); drop.onclick = () => act("/api/drop-next", {}, "The next transfer will really be created, but its reply will be dropped");
   const trick = async (r2, body) => { try { await api(`/api/incidents/${i.id}/approve`, { role: r2 }); } catch (e) { return toast(e.message, true); } act(`/api/incidents/${i.id}/pay`, { role: r2, ...body }); };
@@ -165,7 +185,7 @@ function render() {
   br.append(sm); d.append(br);
 
   // Log
-  const lg = el("section", "card"); lg.append(el("h3", null, "Evidence log (newest first)"));
+  const lg = el("section", "card adv"); lg.append(el("h3", null, "Evidence log (newest first)"));
   const ol = el("ol", "log");
   for (const e of i.events) {
     const li = el("li"); li.append(el("i", "pv " + e.provenance), el("time", null, when(e.at)), el("b", null, e.kind.replace(/_/g, " ")));
@@ -174,7 +194,11 @@ function render() {
     li.append(el("span", null, bits.join(" · "))); ol.append(li);
   }
   lg.append(ol); d.append(lg);
+  document.body.classList.toggle("simple", !advanced);
 }
+const advBtn = document.getElementById("advtoggle");
+if (advBtn) { const sync = () => { advBtn.textContent = advanced ? "Simple view" : "Advanced (testers)"; document.body.classList.toggle("simple", !advanced); };
+  advBtn.onclick = () => { advanced = !advanced; try { localStorage.setItem("adv", advanced ? "1" : "0"); } catch {} sync(); }; sync(); }
 
 $("#newinc").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); act("/api/incidents", { invoice: f.get("invoice"), amount: f.get("amount"), separate_invoice: !!f.get("separate_invoice") }, r => { current = r.id; return "Incident opened"; }); };
 $("#kill").onclick = () => {

@@ -54,3 +54,13 @@ button.primary:disabled{background:#2a333b;border-color:#3a4652;color:#8796a4}
 /* Phones: the tall header no longer sticks over the page and hides buttons while scrolling; buttons scroll clear of it. */
 @media (max-width:700px){.top{position:static}}
 html{scroll-padding-top:90px}@media (max-width:700px){html{scroll-padding-top:12px}}
+
+/* Simple view: plain-English summary first, tester tools hidden */
+body.simple .adv{display:none!important}
+.advbtn{background:transparent;border:1px solid #3a4654;color:#c9d1d9;border-radius:8px;padding:6px 12px;cursor:pointer;margin-right:8px}
+.card.story .plain{font-size:18px;margin:4px 0 10px}
+.card.story blockquote.said{margin:6px 0;padding:10px 14px;background:#fff;color:#1c2128;border-radius:10px;font-size:16px}
+.card.story .steps{display:flex;gap:10px;flex-wrap:wrap;padding:0;margin:12px 0 0;list-style:none;counter-reset:s}
+.card.story .steps li{counter-increment:s;background:#1f2a35;border-radius:999px;padding:6px 14px;font-size:14px}
+.card.story .steps li::before{content:counter(s);display:inline-block;width:20px;height:20px;border-radius:50%;background:#ff7a45;color:#111;text-align:center;font-weight:700;margin-right:8px;line-height:20px}
+.plaindec{font-size:20px;font-weight:600;margin:6px 0 4px}
