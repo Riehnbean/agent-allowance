@@ -36,7 +36,7 @@ async function load(quiet) {
   $("#gate").hidden = true;
   if (S.env) $("#env").textContent = S.env.replace(" - ", " · ");
   const p = S.policy;
-  $("#budget").textContent = `Spent today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} (includes the example payments and small holds for possible bank fees) · max ${usd(p.per_tx_cap)} per payment`;
+  $("#budget").textContent = `${usd(p.committed_today)} of ${usd(p.daily_cap)} today · max ${usd(p.per_tx_cap)} per payment`; $("#budget").title = "Money committed today, including the example payments and small holds for possible bank fees";
   $("#agentname").textContent = window.__recorded ? "free open-source model (GPT-OSS) when reachable, else the rulebook · the video uses Claude" : S.agent;
   if (p.log) $("#agentname").append(el("span", p.log.intact ? "adv" : null, p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`));
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
@@ -62,7 +62,7 @@ async function load(quiet) {
   for (const i of S.incidents) {
     const li = el("li"); const b = el("button", "inc" + (current === i.id ? " sel" : ""));
     b.append(el("b", null, i.invoice), el("span", "amt", money(i.amount, i.currency)), el("span", "st st-" + i.state, stateLabel(i.state)));
-    b.onclick = () => { current = i.id; render(); }; li.append(b); list.append(li);
+    b.onclick = () => { current = i.id; render(); if (innerWidth < 900) $("#detail").scrollIntoView({ behavior: "smooth", block: "start" }); }; li.append(b); list.append(li);
   }
   if (!current && S.incidents[0]) current = (S.incidents.find(i => i.invoice === "INV-1042") || S.incidents[0]).id;
   render();
@@ -72,6 +72,7 @@ const PLAIN_STATE = { OPEN: "Open", ESCALATED: "Needs a person", RESOLVED: "Done
 const stateLabel = st => PLAIN_STATE[st] || st;
 const PLAIN_FAIL = { CHANNEL_TIMEOUT: "bank connection timed out", BENEFICIARY_BANK_RETURNED: "the supplier's bank sent it back", INVALID_ACCOUNT: "account number not valid", ACCOUNT_CLOSED: "account is closed", INSUFFICIENT_FUNDS: "not enough money in the account", COMPLIANCE_REJECTED: "blocked by a compliance check", CANCELLED_BY_USER: "cancelled by a person" };
 const failLabel = f => PLAIN_FAIL[f] || String(f || "").replace(/_/g, " ").toLowerCase();
+const neverSent = p => p.status === "CANCELLED" && p.status_source === "none" && p.failure_type !== "RELEASED_BY_OPERATOR";   // blocked before reaching Airwallex
 function pill(status) { return el("span", "pill p-" + status, status); }
 let advanced = false; try { advanced = localStorage.getItem("adv") === "1"; } catch {}
 const PLAIN_STATUS = { RESERVED: "being sent", UNKNOWN: "unclear - checking with Airwallex", CREATED: "on its way", SCHEDULED: "on its way", PROCESSING: "on its way",
@@ -93,7 +94,8 @@ function render() {
   if (!i) { d.append(el("p", "empty", "Open an incident to start.")); return; }
   [...document.querySelectorAll(".inc")][S.incidents.indexOf(i)]?.classList.add("sel");
   const head = el("div", "dhead");
-  head.append(el("h2", null, `${i.supplier} · ${i.invoice}`), el("span", "big", money(i.amount, i.currency)), el("span", "st st-" + i.state, stateLabel(i.state)));
+  const h2 = el("h2", null, `${i.supplier} · `); h2.append(el("span", "nowrap", i.invoice));
+  head.append(h2, el("span", "big", money(i.amount, i.currency)), el("span", "st st-" + i.state, stateLabel(i.state)));
   d.append(head);
   if (i.alert) { const al = el("div", "alert"); al.append(el("b", null, "Safety alarm: " + i.alert.replace(/_/g, " ")), el("span", null, " - new payments on this incident are frozen until a person resolves it.")); d.append(al); }
   if (S.policy.killed) { const al = el("div", "alert"); al.append(el("b", null, "STOP is on: "), el("span", null, S.policy.killed_reason || "")); d.append(al); }
@@ -113,7 +115,7 @@ function render() {
   const top = el("div", "agtop"); top.append(el("h3", null, "The AI's advice"));
   const aiTag = { ready: ["ai-ready", "AI answer ready ✓"], thinking: ["ai-think", "AI is reading the evidence…"], }[i.ai];
   if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
-  const ask = el("button", "primary", "Ask the AI");
+  const ask = el("button", i.decision ? null : "primary", i.decision ? "Ask the AI again" : "Ask the AI");
   ask.onclick = async () => { if (Date.now() - (askedAt[i.id] || 0) < 4000) return; askedAt[i.id] = Date.now(); ask.disabled = true; ask.textContent = "Agent thinking…";
     await act(`/api/incidents/${i.id}/agent`, {}, r => `Advice ready: ${PLAIN_DECISION[r.decision] || r.decision}`); };
   if (!i.payments.length) { ask.disabled = true; ask.title = "Nothing has been sent yet - approve and send it below. The AI is for payments that went wrong."; }
@@ -126,14 +128,24 @@ function render() {
     const rec = rec0 && rec0.decision === i.decision.decision ? rec0 : null;   // only when it agrees with the live check (e.g. not after the invoice was paid)   // browser demo: the free AI didn't answer
     if (rec) {   // one verdict on screen: Claude's saved answer for this example, with the live rulebook check underneath
       ag.append(el("div", "plaindec d-" + rec.decision, PLAIN_DECISION[rec.decision] || rec.decision));
-      ag.append(el("p", "answered", `Answered by: ${rec.answered_by} - a saved answer for this exact example (real run, ${rec.at}), because the live AI didn't answer just now`));
+      ag.append(el("p", "answered", `Answered by: ${rec.answered_by.replace(/ \(.*\)/, "")} (saved answer - the free live AI is busy)`));
       const ul = el("ul"); for (const r of rec.reasons) ul.append(el("li", null, r)); ag.append(ul);
       const same = rec.decision === i.decision.decision;
-      ag.append(el("p", "hint", `Live check just now by the built-in safety rules: ${PLAIN_DECISION[i.decision.decision] || i.decision.decision}${same ? " (same answer)" : " - the desk follows this live check"}.`));
+      ag.append(el("p", "hint", same ? "The built-in safety rules checked it live and agree." : `The built-in safety rules say: ${PLAIN_DECISION[i.decision.decision]} - the desk follows them.`));
     } else {
       ag.append(el("div", "decision adv d-" + i.decision.decision, i.decision.decision), el("div", "plaindec d-" + i.decision.decision, PLAIN_DECISION[i.decision.decision] || ""));
       ag.append(el("p", "answered", isAI ? "Answered by: " + (i.decision.answered_by || "the AI") : "Answered by the safety rulebook (the AI wasn't reachable just then, so plain code answered)"));
       const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
+    }
+    {   // what the agent looked at before answering - its tools, in plain words
+      const last = i.payments.filter(p => !neverSent(p)).slice(-1)[0], said = (i.events || []).some(e => e.kind === "supplier_message");
+      const chk = el("details", "checked"); chk.open = innerWidth >= 900; chk.append(el("summary", null, "What the AI checked before answering"));
+      const ol = el("ul");
+      ol.append(el("li", null, last ? `Asked Airwallex for the latest status of the ${money(last.amount, last.currency)} payment: ${PLAIN_STATUS[last.status] || last.status}${last.failure_type ? " (" + failLabel(last.failure_type) + ")" : ""}` : "Looked for payments: none sent yet"));
+      ol.append(el("li", null, said ? "Read the supplier's email (treated as untrusted - it can't give orders)" : "No supplier email to read"));
+      ol.append(el("li", null, i.alert ? `Saw the code's safety alarm: ${i.alert.replace(/_/g, " ").toLowerCase()}` : "No safety alarm on this invoice"));
+      ol.append(el("li", null, `Could only pick from what the code allowed: ${(i.decision.allowed || []).map(a => PLAIN_DECISION[a] || a).join(" / ")}`));
+      chk.append(ol); ag.append(chk);
     }
     ag.append(el("p", "hint adv", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else if (!i.payments.length) ag.append(el("p", "hint", "Nothing has gone wrong yet. The AI helps once a payment fails or the supplier disputes it."));
@@ -187,9 +199,9 @@ function render() {
   const op = el("section", "card"); op.append(el("h3", null, "You"));
   const ops = el("div", "btns");
   // a payment that was blocked before reaching Airwallex never went out, so the next one is still the original
-  const role = i.payments.some(p => !(p.status === "CANCELLED" && p.status_source === "none")) ? "replacement" : "original";
+  const role = i.payments.some(p => !neverSent(p)) ? "replacement" : "original";
   const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
-  const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
+  const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || S.policy.killed || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
   const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => { pay.disabled = true; return act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - ${PLAIN_STATUS[r.status] || r.status.toLowerCase()}`); }; pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
   const note = el("input", "note"); note.placeholder = "What did you check?"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
@@ -199,8 +211,8 @@ function render() {
     for (const x of r.proof_of_payment || []) L.push(`PAID: Airwallex transfer ${x.airwallex_transfer_id} (${x.role})`);
     for (const a of i.approvals || []) L.push(`APPROVAL #${a.id}: ${a.role} ${money(a.amount, i.currency)} - approved by ${a.approved_by}${a.cosigned_by ? ", co-signed by " + a.cosigned_by : ""}${a.used_by_request ? " (used once)" : ""}`);
     L.push("", "What happened, step by step (source in brackets):");
-    for (const e of r.events.filter(e => e.incident_id === i.id)) { const b = e.body || {}; L.push(`${new Date(e.at * 1000).toLocaleString("en-US", { timeZone: "America/Chicago" })} CT  [${/simulat/.test(e.kind) ? "simulator" : e.provenance}] ${e.kind.replace(/_/g, " ")}${b.by ? " by " + b.by : ""}${b.note ? ` - note: "${b.note}"` : ""}  #${(e.hash || "").slice(0, 10)}`); }
-    L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text", "", "Machine-readable copy for auditors (amounts in cents) follows:", JSON.stringify(r, null, 1));
+    for (const e of r.events.filter(e => e.incident_id === i.id)) { const b = e.body || {}; L.push(`${new Date(e.at * 1000).toLocaleString("en-US", { timeZone: "America/Chicago" })} CT  [${/simulat/.test(e.kind) ? "simulator" : e.provenance}] ${e.kind.replace(/_/g, " ")}${b.status ? " - Airwallex said: " + b.status : ""}${b.by ? " by " + b.by : ""}${b.note ? ` - note: "${b.note}"` : ""}  #${(e.hash || "").slice(0, 10)}`); }
+    L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text · simulator = pretend bank (demo/testing only)", "", "Machine-readable copy for auditors (amounts in cents) follows:", JSON.stringify(r, null, 1));
     const a = el("a"); a.href = URL.createObjectURL(new Blob([L.join("\n")], { type: "text/plain" })); a.download = `receipt-${i.invoice}.txt`; a.click(); } catch (err) { toast(err.message, true); } };
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, r => r && r.pending ? "Reopen request saved - a second person must confirm it" : "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
@@ -225,7 +237,7 @@ function render() {
       op.append(cb);
     } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${S.me} must open this desk with their own sign-in and co-sign.`));
   }
-  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${money(unused.amount, i.currency)}, ${i.currency}, expires ${when(unused.expires_at)}.` : (i.payments.length && i.approvals.some(a => a.used_by_request) && !["CANCELLED"].includes(i.payments[i.payments.length - 1].status) ? (i.payments.some(p => p.status === "PAID") ? "Paid ✓ - its approval was used once, so it can't be paid twice." : "Already sent - its approval is used up, so it can't be sent twice.") : "Every payment needs its own approval. An approval works once.")));
+  op.append(el("p", "hint", unused ? `${unused.approved_by[0].toUpperCase() + unused.approved_by.slice(1)} approved ${money(unused.amount, i.currency)} to ${i.supplier}${unused.cosigned_by ? ", co-signed by " + unused.cosigned_by[0].toUpperCase() + unused.cosigned_by.slice(1) : ""} - only for this supplier and amount, valid until ${when(unused.expires_at)} (approval #${unused.id}).` : (i.payments.length && i.approvals.some(a => a.used_by_request) && !["CANCELLED"].includes(i.payments[i.payments.length - 1].status) ? (i.payments.some(p => p.status === "PAID") ? "Paid ✓ - its approval was used once, so it can't be paid twice." : "Already sent - its approval is used up, so it can't be sent twice.") : "Every payment needs its own approval. An approval works once.")));
   d.append(op);
 
   // Try to break it

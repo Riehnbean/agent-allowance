@@ -4,17 +4,17 @@
   const det = () => document.querySelector("#detail")?.textContent || "";
   const on = inv => new RegExp(inv).test(document.querySelector("#detail h2")?.textContent || "");
   const answered = () => !!document.querySelector("section.card.agent .plaindec");
-  const cosigned = () => on("INV-1042") && /\+ jordan/.test(det());
+  const cosigned = () => on("INV-1042") && /co-signed by Jordan|\+ jordan/i.test(det());
   const sent = () => on("INV-1042") && document.querySelectorAll("#detail div.pay").length >= 2;
   const STEPS = [
-    { sel: "#list", t: "This is a payments desk for a company's accounts team. Each row is a supplier payment that needs attention. Let's handle two of them." },
+    { sel: "#list", t: "This is a payments desk for a company's accounts team. Each row is a supplier payment that needs attention. Let's go through them one by one." },
     { sel: "#list li", text: "INV-1042", t: "We're on INV-1042. Airwallex says the first payment failed with a bank timeout, and the supplier is waiting.", wait: () => on("INV-1042"), stay: true },
     { sel: "section.card.agent", t: "Tap \"Ask the AI\" and wait a few seconds.", wait: () => on("INV-1042") && answered() },
     { sel: "section.card.agent", t: "It says: safe to send it again - the first payment failed and never arrived." },
-    { sel: "button.primary", text: "Approve replacement", t: "Tap \"Approve replacement\". That approval only works for this supplier and this amount, for 15 minutes.", wait: () => on("INV-1042") && /Approval #/.test(det()), done: cosigned },
+    { sel: "button.primary", text: "Approve replacement", t: "Tap \"Approve replacement\". That approval only works for this supplier and this amount, for 15 minutes.", wait: () => on("INV-1042") && /approval #/i.test(det()), done: cosigned },
     { sel: "#switchop", t: "It's over the $200 two-person limit, so a second person must co-sign. In real use Jordan signs in on his own computer; here, tap \"switch to Jordan\" at the top.", wait: () => /Jordan · switch/.test(document.querySelector("#switchop")?.textContent || ""), done: cosigned },
     { sel: "button.primary", text: "Co-sign", t: "You're Jordan now. Tap \"Co-sign\".", wait: cosigned },
-    { sel: "#switchop", t: "Switch back to Zach.", wait: () => /Zach · switch/.test(document.querySelector("#switchop")?.textContent || ""), done: sent },
+    { sel: "#switchop", t: "Switch back to Zach. (Either person can press Send once both have signed.)", wait: () => /Zach · switch/.test(document.querySelector("#switchop")?.textContent || ""), done: sent },
     { sel: "button.primary", text: "Send replacement", t: "Tap \"Send replacement\". The payment goes out (to a pretend Airwallex - nothing real moves).", wait: sent },
     { sel: "p.hint", text: "twice", t: "Send is now greyed out: each approval works once, so the supplier can't be paid twice." },
     { sel: "section.card", text: "Payments on this incident", t: "Now Airwallex delivers it. In this demo the pretend bank confirms in a few seconds - just wait.", wait: () => on("INV-1042") && [...document.querySelectorAll("#detail div.pay")].some(d => /paid/i.test(d.textContent) && /Replacement/.test(d.textContent)) },

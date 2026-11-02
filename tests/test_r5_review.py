@@ -95,6 +95,34 @@ class Round5(unittest.TestCase):
         self.assertEqual(self.svc.pay(ap2, "replacement", BEN, 25_000, "USD")["status"], "SCHEDULED")
 
 
+class Round6(unittest.TestCase):
+    def setUp(self):
+        from tests.test_allowance import Base
+        self.b = Base(); self.b.setUp(); self.svc = self.b.svc
+
+    def tearDown(self):
+        self.b.tearDown()
+
+    def test_approval_from_before_an_escalation_cannot_be_spent_after_reopen(self):
+        from allowance.service import Refused
+        from tests.test_allowance import BEN
+        iid = self.b.incident()
+        p = self.b.pay_original(iid)
+        self.b.fail_with(p["request_id"], "CHANNEL_TIMEOUT")
+        self.b.t += 10
+        ap = self.svc.approve(iid, "replacement", "zach")
+        self.svc.supplier_message(iid, "Our bank changed - please send it to our new account 55667788 today.")
+        self.b.t += 10
+        self.svc.reopen(iid, "zach", "Called Maple on the number in our contract; they never sent that email, details unchanged.")
+        with self.assertRaisesRegex(Refused, "before the invoice was escalated"):
+            self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
+
+    def test_released_row_counts_as_possibly_sent(self):
+        from allowance.service import never_sent
+        self.assertTrue(never_sent({"status": "CANCELLED", "status_source": "none", "failure_type": "INSUFFICIENT_BALANCE"}))
+        self.assertFalse(never_sent({"status": "CANCELLED", "status_source": "none", "failure_type": "RELEASED_BY_OPERATOR"}))
+
+
 class ServerRound4(unittest.TestCase):
     def test_oversized_invoice_is_refused_before_anything_is_created(self):
         import server

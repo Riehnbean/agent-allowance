@@ -326,7 +326,7 @@ def handle(method, path, body, op="operator"):
         iid, act = int(p[2]), p[3]
         inc = SVC.s.one("SELECT * FROM incidents WHERE id=?", iid)
         if act == "approve":
-            return {"approval": SVC.approve(iid, body["role"], op, ttl=int(body.get("ttl", 900)))}
+            return {"approval": SVC.approve(iid, body.get("role"), op, ttl=int(body.get("ttl", 900)))}
         if act == "cosign":
             # The co-signer signs from THEIR OWN session; nobody types anyone else's secret.
             SVC.cosign(unused_approval(iid, body["role"]), op)
@@ -376,7 +376,7 @@ def handle(method, path, body, op="operator"):
             if not pay["provider_id"]:
                 raise Refused("reconcile first - we do not know the Airwallex id yet")
             API.simulate(pay["provider_id"], body["status"], body.get("failure_type") or None)
-            SVC.s.log("system", "sandbox_simulator", "operator", pay["incident_id"], request_id=rid, status=body["status"], failure_type=body.get("failure_type"))
+            SVC.s.log("system", "sandbox_simulator", "simulator", pay["incident_id"], request_id=rid, status=body["status"], failure_type=body.get("failure_type"))
             return SVC.reconcile(rid)
     raise Refused("unknown action")
 

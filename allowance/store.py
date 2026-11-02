@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS events(
   incident_id INTEGER,
   actor TEXT NOT NULL,                  -- operator | agent | provider | policy | system
   kind TEXT NOT NULL,
-  provenance TEXT NOT NULL,             -- observed (from Airwallex) | decided (code) | model (LLM text) | operator | untrusted (supplier text)
+  provenance TEXT NOT NULL,             -- observed (from Airwallex) | decided (code) | model (LLM text) | operator | untrusted (supplier text) | simulator (pretend bank, demo/testing only)
   body TEXT NOT NULL,
   prev_hash TEXT,                       -- hash chain: editing or removing any past row breaks every later hash
   hash TEXT

@@ -44,6 +44,12 @@ ALERT_RANK = {"CANCELLED_BUT_LIVE": 96, "PROVIDER_MISMATCH": 97, "PAID_THEN_FAIL
               "PAID_THEN_CANCELLED": 80, "FRAUD_SIGNAL": 70, "OVERDUE_SLA": 40, "FEE_OVER_LIMIT": 10}
 
 
+def never_sent(p):
+    """A row blocked here before anything went to Airwallex (low balance, STOP, payee re-read...).
+    A row an operator RELEASED was UNKNOWN first, so Airwallex may have it: that one counts as sent."""
+    return p["status"] == "CANCELLED" and p["status_source"] == "none" and p["failure_type"] != "RELEASED_BY_OPERATOR"
+
+
 class Refused(Exception):
     """A policy check failed. The reason is safe to show the operator and the agent."""
 
@@ -142,11 +148,11 @@ class Service:
             raise Refused("STOP is on - nothing can be approved until payments are resumed")
         b, a, c = beneficiary_id or inc["beneficiary_id"], amount or inc["amount"], currency or inc["currency"]
         if role == "replacement":
-            pays = [p for p in self.s.q("SELECT status,status_source FROM payments WHERE incident_id=? ORDER BY created_at", incident_id)
-                    if p["status_source"] != "none"]   # rows blocked here before sending never reached Airwallex
+            pays = [p for p in self.s.q("SELECT status,status_source,failure_type FROM payments WHERE incident_id=? ORDER BY created_at", incident_id)
+                    if not never_sent(p)]   # rows blocked here before sending never reached Airwallex
             if not pays or any(in_flight(p["status"]) for p in pays) or pays[-1]["status"] != "CANCELLED" or pays[-1]["status_source"] != "provider_get":
                 raise Refused("a replacement can only be approved after Airwallex confirms the previous payment failed")
-        if role == "original" and self.s.one("SELECT 1 FROM payments WHERE incident_id=? AND status_source<>'none'", incident_id):
+        if role == "original" and any(not never_sent(p) for p in self.s.q("SELECT status,status_source,failure_type FROM payments WHERE incident_id=?", incident_id)):
             raise Refused("an original payment already went out for this invoice - only a replacement can be approved, and only after it failed")
         if (b, a, c) != (inc["beneficiary_id"], inc["amount"], inc["currency"]):
             self.s.log("policy", "approval_refused", "decided", incident_id, reason="approval terms differ from the invoice")
@@ -287,7 +293,7 @@ class Service:
         if not ap:
             raise Refused("no such approval")
         # rows blocked here before anything was sent (CANCELLED, source "none") never reached Airwallex: nothing to re-read
-        for p in self.s.q("SELECT request_id FROM payments WHERE incident_id=? AND NOT (status='CANCELLED' AND status_source='none')", ap["incident_id"]):
+        for p in self.s.q("SELECT request_id FROM payments WHERE incident_id=? AND NOT (status='CANCELLED' AND status_source='none' AND COALESCE(failure_type,'')<>'RELEASED_BY_OPERATOR')", ap["incident_id"]):
             # strict=True: a failed or not-found read raises here. A cached CANCELLED, however recent,
             # never counts - the evidence has to come from the read made in this very attempt.
             try:
@@ -570,7 +576,7 @@ class Service:
         pays = [dict(p) for p in self.s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,amount,currency,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", incident_id)]
         pol = self.s.policy()
         return {
-            "incident": {k: inc[k] for k in ("id", "supplier", "invoice", "amount", "currency", "supplier_deadline", "state", "alert")},
+            "incident": {k: inc[k] for k in ("id", "supplier", "invoice", "amount", "currency", "supplier_deadline", "state", "alert", "reopened_at")},
             "payments": pays,
             "kill_switch": bool(pol["killed"]),
             "budget_left_today": pol["daily_cap"] - self.s.committed_today(self.now()),
@@ -589,10 +595,12 @@ class Service:
             acts.add("WAIT")
         if paid and not live:
             acts.add("CLOSE")
-        sent = [p for p in pays if p["status_source"] != "none"]   # ignore rows blocked here before sending
+        sent = [p for p in pays if not never_sent(p)]   # ignore rows blocked here before sending
         last = sent[-1] if sent else None
+        reopened = ev["incident"].get("reopened_at")
         if (not live and not paid and last and last["status"] == "CANCELLED" and last["status_source"] == "provider_get"
-                and last["failure_type"] in RETRYABLE and not ev["kill_switch"] and not ev["incident"]["alert"]):
+                and (last["failure_type"] in RETRYABLE or (reopened and reopened > (last.get("updated_at") or 0)))
+                and not ev["kill_switch"] and not ev["incident"]["alert"]):
             acts.add("REPLACE")
         return sorted(acts)
 
@@ -714,6 +722,8 @@ class Service:
             raise Refused(f"approval is for the {ap['role']} payment, not the {role}")
         if self.now() >= ap["expires_at"]:
             raise Refused("approval expired")
+        if inc["reopened_at"] and ap["created_at"] < inc["reopened_at"]:
+            raise Refused("this approval was given before the invoice was escalated and reopened - approve again with what you know now")
         if (ap["beneficiary_id"], ap["amount"], ap["currency"]) != (beneficiary_id, face, currency):
             raise Refused("terms differ from what the operator approved (beneficiary, amount or currency)")
         ben = self.s.one("SELECT * FROM beneficiaries WHERE id=?", beneficiary_id)
@@ -751,14 +761,14 @@ class Service:
             raise Refused("duplicate lock: another payment on this incident may still go through")
         if any(p["status"] == "PAID" for p in pays):
             raise Refused("this incident already has a paid transfer")
-        tries = [p for p in pays if not (p["status"] == "CANCELLED" and p["status_source"] == "none")]   # blocked-before-send rows cost nothing
+        tries = [p for p in pays if not never_sent(p)]   # blocked-before-send rows cost nothing
         if len(tries) >= pol["max_attempts"]:
             raise Refused(f"already {len(tries)} attempts on this invoice (max {pol['max_attempts']}); each failed transfer can cost a non-refundable fee - escalate instead")
         if role == "replacement":
             orig = [p for p in pays if p["role"] == "original"]
             if not orig:
                 raise Refused("no original payment to replace")
-            sent = [p for p in pays if p["status_source"] != "none"]   # a replacement blocked here before sending never reached Airwallex
+            sent = [p for p in pays if not never_sent(p)]   # a replacement blocked here before sending never reached Airwallex
             if not sent:
                 raise Refused("no original payment reached Airwallex - approve and send the original instead")
             last = sent[-1]
@@ -768,7 +778,7 @@ class Service:
                 raise Refused("previous payment is not confirmed failed by a fresh Airwallex lookup")
             if last["failure_type"] not in RETRYABLE and not (inc["reopened_at"] and inc["reopened_at"] > last["updated_at"]):
                 raise Refused(f"failure type {last['failure_type']} is not safe to retry automatically - a person must investigate and reopen the incident first")
-        elif any(not (p["status"] == "CANCELLED" and p["status_source"] == "none") for p in pays):
+        elif any(not never_sent(p) for p in pays):
             # Only payments that were blocked here before anything was sent (low balance, STOP, payee re-read)
             # leave room for a fresh original; anything Airwallex may have seen needs the replacement path.
             raise Refused("an original payment already exists for this incident")

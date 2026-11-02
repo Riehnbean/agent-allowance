@@ -77,3 +77,7 @@ body.simple .adv{display:none!important}
 .stale{background:#2a2410;border:1px solid #6b5a1e;color:#e3c66b;border-radius:8px;padding:6px 10px;font-size:13px;margin:6px 0}
 .recorded{border:1px solid #6a4fb3;background:#1d1830;border-radius:10px;padding:10px 12px;margin-top:10px}.recorded b{color:#c297ff}.recorded p{margin:6px 0}.recorded small{color:var(--mute)}
 .resume input{min-width:min(420px,100%)}.grid>*{min-width:0}.row input{width:min(130px,100%)}
+.nowrap{white-space:nowrap}
+@media (max-width:600px){header.top{gap:6px 8px;padding:8px 10px}header .budget,header .agentname,header .env{font-size:11px}header button,#switchop{padding:6px 9px;font-size:12px}.brand span{display:none}}
+@media (max-width:600px){.toast{bottom:64px}}
+.checked{margin-top:8px;font-size:13px;color:var(--mute)}.checked summary{cursor:pointer;color:var(--blue)}.checked ul{margin:6px 0 0 18px;padding:0}
