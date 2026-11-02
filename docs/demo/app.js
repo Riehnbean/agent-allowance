@@ -62,7 +62,7 @@ async function load(quiet) {
   for (const i of S.incidents) {
     const li = el("li"); const b = el("button", "inc" + (current === i.id ? " sel" : ""));
     b.append(el("b", null, i.invoice), el("span", "amt", money(i.amount, i.currency)), el("span", "st st-" + i.state, stateLabel(i.state)));
-    b.onclick = () => { current = i.id; render(); if (innerWidth < 900) $("#detail").scrollIntoView({ behavior: "smooth", block: "start" }); }; li.append(b); list.append(li);
+    b.onclick = () => { if (current !== i.id) $("#toast").classList.remove("on"); current = i.id; render(); if (innerWidth < 900) $("#detail").scrollIntoView({ behavior: "smooth", block: "start" }); }; li.append(b); list.append(li);
   }
   if (!current && S.incidents[0]) current = (S.incidents.find(i => i.invoice === "INV-1042") || S.incidents[0]).id;
   render();
@@ -72,7 +72,8 @@ const PLAIN_STATE = { OPEN: "Open", ESCALATED: "Needs a person", RESOLVED: "Done
 const stateLabel = st => PLAIN_STATE[st] || st;
 const PLAIN_FAIL = { CHANNEL_TIMEOUT: "bank connection timed out", BENEFICIARY_BANK_RETURNED: "the supplier's bank sent it back", INVALID_ACCOUNT: "account number not valid", ACCOUNT_CLOSED: "account is closed", INSUFFICIENT_FUNDS: "not enough money in the account", COMPLIANCE_REJECTED: "blocked by a compliance check", CANCELLED_BY_USER: "cancelled by a person" };
 const failLabel = f => PLAIN_FAIL[f] || String(f || "").replace(/_/g, " ").toLowerCase();
-const neverSent = p => p.status === "CANCELLED" && p.status_source === "none" && p.failure_type !== "RELEASED_BY_OPERATOR";   // blocked before reaching Airwallex
+const neverSent = (p, reopenedAt) => p.status === "CANCELLED" && p.status_source === "none" && (p.failure_type !== "RELEASED_BY_OPERATOR" || (reopenedAt && reopenedAt >= p.updated_at));   // blocked before reaching Airwallex
+const cap = n => n ? n[0].toUpperCase() + n.slice(1) : n;
 function pill(status) { return el("span", "pill p-" + status, status); }
 let advanced = false; try { advanced = localStorage.getItem("adv") === "1"; } catch {}
 const PLAIN_STATUS = { RESERVED: "being sent", UNKNOWN: "unclear - checking with Airwallex", CREATED: "on its way", SCHEDULED: "on its way", PROCESSING: "on its way",
@@ -118,6 +119,7 @@ function render() {
   const ask = el("button", i.decision ? null : "primary", i.decision ? "Ask the AI again" : "Ask the AI");
   ask.onclick = async () => { if (Date.now() - (askedAt[i.id] || 0) < 4000) return; askedAt[i.id] = Date.now(); ask.disabled = true; ask.textContent = "Agent thinking…";
     await act(`/api/incidents/${i.id}/agent`, {}, r => `Advice ready: ${PLAIN_DECISION[r.decision] || r.decision}`); };
+  if (i.state === "RESOLVED") { ask.disabled = true; ask.title = "This invoice is done."; }
   if (!i.payments.length) { ask.disabled = true; ask.title = "Nothing has been sent yet - approve and send it below. The AI is for payments that went wrong."; }
   top.append(ask);
   ag.append(top);
@@ -138,7 +140,7 @@ function render() {
       const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
     }
     {   // what the agent looked at before answering - its tools, in plain words
-      const last = i.payments.filter(p => !neverSent(p)).slice(-1)[0], said = (i.events || []).some(e => e.kind === "supplier_message");
+      const last = i.payments.filter(p => !neverSent(p, i.reopened_at)).slice(-1)[0], said = (i.events || []).some(e => e.kind === "supplier_message");
       const chk = el("details", "checked"); chk.open = innerWidth >= 900; chk.append(el("summary", null, "What the AI checked before answering"));
       const ol = el("ul");
       ol.append(el("li", null, last ? `Asked Airwallex for the latest status of the ${money(last.amount, last.currency)} payment: ${PLAIN_STATUS[last.status] || last.status}${last.failure_type ? " (" + failLabel(last.failure_type) + ")" : ""}` : "Looked for payments: none sent yet"));
@@ -199,8 +201,8 @@ function render() {
   const op = el("section", "card"); op.append(el("h3", null, "You"));
   const ops = el("div", "btns");
   // a payment that was blocked before reaching Airwallex never went out, so the next one is still the original
-  const role = i.payments.some(p => !neverSent(p)) ? "replacement" : "original";
-  const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
+  const role = i.payments.some(p => !neverSent(p, i.reopened_at)) ? "replacement" : "original";
+  const unused = i.approvals.find(a => a.role === role && !a.used_by_request && !a.stale && a.expires_at * 1000 > Date.now());
   const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || S.policy.killed || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
   const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => { pay.disabled = true; return act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - ${PLAIN_STATUS[r.status] || r.status.toLowerCase()}`); }; pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
   const note = el("input", "note"); note.placeholder = "What did you check?"; 
@@ -233,9 +235,9 @@ function render() {
   }
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
     if (unused.approved_by !== S.me) {
-      const cb = el("button", "primary", `Co-sign ${money(i.amount, i.currency)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
+      const cb = el("button", "primary", `Co-sign ${money(i.amount, i.currency)} as ${cap(S.me)}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
       op.append(cb);
-    } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${S.me} must open this desk with their own sign-in and co-sign.`));
+    } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${cap(S.me)} must open this desk with their own sign-in and co-sign.`));
   }
   op.append(el("p", "hint", unused ? `${unused.approved_by[0].toUpperCase() + unused.approved_by.slice(1)} approved ${money(unused.amount, i.currency)} to ${i.supplier}${unused.cosigned_by ? ", co-signed by " + unused.cosigned_by[0].toUpperCase() + unused.cosigned_by.slice(1) : ""} - only for this supplier and amount, valid until ${when(unused.expires_at)} (approval #${unused.id}).` : (i.payments.length && i.approvals.some(a => a.used_by_request) && !["CANCELLED"].includes(i.payments[i.payments.length - 1].status) ? (i.payments.some(p => p.status === "PAID") ? "Paid ✓ - its approval was used once, so it can't be paid twice." : "Already sent - its approval is used up, so it can't be sent twice.") : "Every payment needs its own approval. An approval works once.")));
   d.append(op);

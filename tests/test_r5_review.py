@@ -119,8 +119,11 @@ class Round6(unittest.TestCase):
 
     def test_released_row_counts_as_possibly_sent(self):
         from allowance.service import never_sent
-        self.assertTrue(never_sent({"status": "CANCELLED", "status_source": "none", "failure_type": "INSUFFICIENT_BALANCE"}))
-        self.assertFalse(never_sent({"status": "CANCELLED", "status_source": "none", "failure_type": "RELEASED_BY_OPERATOR"}))
+        self.assertTrue(never_sent({"status": "CANCELLED", "status_source": "none", "failure_type": "INSUFFICIENT_BALANCE", "updated_at": 1}))
+        self.assertFalse(never_sent({"status": "CANCELLED", "status_source": "none", "failure_type": "RELEASED_BY_OPERATOR", "updated_at": 1}))
+        rel = {"status": "CANCELLED", "status_source": "none", "failure_type": "RELEASED_BY_OPERATOR", "updated_at": 100}
+        self.assertFalse(never_sent(rel, reopened_at=50))     # reopened before the release: still counts as possibly sent
+        self.assertTrue(never_sent(rel, reopened_at=200))     # a person reopened after the release: a fresh original is allowed
 
 
 class ServerRound4(unittest.TestCase):

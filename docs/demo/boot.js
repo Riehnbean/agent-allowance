@@ -54,7 +54,7 @@ def route(method, path, token, body):
     except Exception as e: return (500, json.dumps({"error": f"internal error ({type(e).__name__})"}))
 `;
 
-const setStatus = t => { const e = document.getElementById("bootmsg"); if (e) e.textContent = t; };
+const setStatus = t => { const e = document.getElementById("bootmsg"); if (e) e.textContent = t + " (usually 5-10 seconds)"; };
 window.__pyReady = (async () => {
   setStatus("Loading Python in your browser…");
   const py = await loadPyodide();

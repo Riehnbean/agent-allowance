@@ -84,7 +84,7 @@ def state():
     incs = []
     for i in s.q("SELECT * FROM incidents ORDER BY id DESC LIMIT 20"):
         pays = [dict(p) for p in s.q("SELECT request_id,role,status,failure_type,failure_message,status_source,provider_id,amount,currency,cost_amount,fx_rate,fx_quote_id,fee,anomaly,created_at,updated_at FROM payments WHERE incident_id=? ORDER BY created_at", i["id"])]
-        aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
+        aps = [dict(a) for a in s.q("SELECT id,role,amount,expires_at,approved_by,cosigned_by,used_by_request,created_at FROM approvals WHERE incident_id=? ORDER BY id", i["id"])]
         # Same rule the service enforces: co-sign is needed over the threshold for ONE payment, or for this payee's 24h total.
         pol0 = s.policy()
         day_to_payee = s.one(
@@ -92,7 +92,9 @@ def state():
             "(SELECT id FROM beneficiaries WHERE account_key=(SELECT account_key FROM beneficiaries WHERE id=?) UNION SELECT ?)",
             time.time() - 86400, i["beneficiary_id"], i["beneficiary_id"])["s"]
         for a in aps:
-            a["needs_cosign"] = a["amount"] > pol0["dual_approval_over"] or day_to_payee + a["amount"] > pol0["dual_approval_over"]
+            # a foreign-currency invoice is checked on its dollar cost at Send; the screen always asks for a co-sign there
+            a["needs_cosign"] = i["currency"] != pol0["currency"] or a["amount"] > pol0["dual_approval_over"] or day_to_payee + a["amount"] > pol0["dual_approval_over"]
+            a["stale"] = bool(i["reopened_at"] and a["created_at"] < i["reopened_at"])   # given before an escalation: dead
         last = s.one("SELECT body,at,provenance FROM events WHERE incident_id=? AND kind='decision' ORDER BY id DESC LIMIT 1", i["id"])
         ev = [dict(e, body=json.loads(e["body"])) for e in s.q("SELECT at,actor,kind,provenance,body FROM events WHERE incident_id=? ORDER BY id DESC LIMIT 30", i["id"])]
         allowed = SVC.allowed_actions(i["id"])
@@ -196,8 +198,16 @@ def reopen_target(iid):
     return f"{iid}|{inc['alert'] if inc else ''}|{(last['request_id'] + ':' + last['status']) if last else ''}"
 
 
+def _ttl(v):
+    try:
+        return int(v)
+    except (OverflowError, ValueError, TypeError):
+        raise Refused("an approval lasts at most 15 minutes") from None
+
+
 def unused_approval(iid, role):
-    a = SVC.s.one("SELECT id FROM approvals WHERE incident_id=? AND role=? AND used_by_request IS NULL ORDER BY id DESC LIMIT 1", iid, role)
+    a = SVC.s.one("SELECT a.id FROM approvals a JOIN incidents i ON i.id=a.incident_id WHERE a.incident_id=? AND a.role=? AND a.used_by_request IS NULL"
+                  " AND (i.reopened_at IS NULL OR a.created_at >= i.reopened_at) ORDER BY a.id DESC LIMIT 1", iid, role)
     if not a:
         raise Refused(f"no unused operator approval for the {role} payment - click Approve first")
     return a["id"]
@@ -326,12 +336,14 @@ def handle(method, path, body, op="operator"):
         iid, act = int(p[2]), p[3]
         inc = SVC.s.one("SELECT * FROM incidents WHERE id=?", iid)
         if act == "approve":
-            return {"approval": SVC.approve(iid, body.get("role"), op, ttl=int(body.get("ttl", 900)))}
+            return {"approval": SVC.approve(iid, body.get("role"), op, ttl=_ttl(body.get("ttl", 900)))}
         if act == "cosign":
             # The co-signer signs from THEIR OWN session; nobody types anyone else's secret.
             SVC.cosign(unused_approval(iid, body["role"]), op)
             return {"cosigned_by": op}
         if act == "pay":
+            if SVC.s.policy()["killed"]:
+                raise Refused("STOP is on - nothing can be paid until payments are resumed")
             role = body["role"]
             amt = cents(body["amount"]) if body.get("amount") else inc["amount"]
             ben = body.get("beneficiary_id") or inc["beneficiary_id"]

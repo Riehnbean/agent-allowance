@@ -25,6 +25,7 @@
     { sel: "section.card.agent", t: "The supplier wants the money sent to a NEW bank account, so the code froze payments the moment that email arrived. Tap \"Ask the AI\".", wait: () => on("INV-1043") && answered() },
     { sel: "section.card.agent", t: "It says: get a person to check. And there's no way to pay this one, whatever the AI says." },
     { sel: "#list li", text: "INV-1044", t: "Tap INV-1044. Airwallex says it's paid, but the supplier says only $280 of $300 arrived.", wait: () => on("INV-1044") },
+    { sel: "section.card.agent", t: "Tap \"Ask the AI\". There's no scam word in this email, so keyword rules miss it - the AI reads what the supplier means.", wait: () => on("INV-1044") && answered() },
     { sel: "section.card.story", t: "The desk shows the $20 gap and won't let anyone simply pay the full $300 again. A person checks first (it's usually a bank fee)." },
     { sel: "#list li", text: "EU-2201", t: "Tap EU-2201: a German supplier billing in euros.", wait: () => on("EU-2201") },
     { sel: "p.fxbig", t: "Before anyone approves, it shows the dollar cost at Airwallex's exchange rate. That dollar amount is what the limits and the two-person rule check." },
@@ -65,13 +66,13 @@
     box.onclick = e => { const a = e.target.dataset.a; if (a === "x") { k = -1; show(); } if (a === "b") { k--; show(); }
       if (a === "n" && s.next) { clearInterval(tick); box.querySelector('[data-a="n"]').disabled = true; Promise.resolve(s.next()).finally(() => setTimeout(() => { k++; show(); }, 600)); return; }
       if (a === "n") { const t = s.wait && !s.stay && target(s); const c = t && (t.matches("button") ? t : (t.matches("li") ? t.querySelector("button") : t.querySelector("button.primary"))); if (c && !c.disabled) { c.click(); return; } k++; show(); } };   // Skip does the step for you
-    let scrolled = false;
+    let scrolled = false, lastC = null;
     tick = setInterval(() => {
       const t = target(s); clearHl();
       if (t) { t.classList.add("tour-hl");
         // the box sits at the top; bring the thing to tap (or the card's main button) into the lower part of the screen
         const c = t.matches("button, li") ? t : (t.querySelector("button.primary") || t);
-        if (!scrolled) { const r = c.getBoundingClientRect(), bh = box.getBoundingClientRect().height + 30;
+        if (!scrolled || (c.tagName + c.textContent) !== lastC) { lastC = c.tagName + c.textContent; const r = c.getBoundingClientRect(), bh = box.getBoundingClientRect().height + 30;
           const want = bh + (innerHeight - bh) * 0.45; if (!c.closest("header")) window.scrollBy({ top: r.top + r.height / 2 - want, behavior: "smooth" }); else if (r.top < 0 || r.bottom > innerHeight) window.scrollTo({ top: 0, behavior: "smooth" }); scrolled = true; }
         const cr = c.getBoundingClientRect(), br = box.getBoundingClientRect();         // never sit on top of the thing to tap
         const hit = !(cr.right < br.left || cr.left > br.right || cr.bottom < br.top || cr.top > br.bottom);

@@ -145,7 +145,7 @@ class RulesAgent:
         deadline = ev["incident"].get("supplier_deadline")
         past_deadline = bool(deadline and ev["now"] > deadline)
         if fraud:
-            reasons.append("Supplier message asks to change where money goes (" + "; ".join(sorted(set(fraud)))[:120] +
+            reasons.append("Supplier message asks to change where money goes (" + redact("; ".join(sorted(set(fraud))))[:120] +
                            "). That is the classic invoice-redirection scam pattern - a person must verify by phone using a number already on file.")
         alert = ev["incident"].get("alert")
         if alert:
