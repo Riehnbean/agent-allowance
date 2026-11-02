@@ -62,5 +62,5 @@ if not svc.s.one("SELECT 1 FROM incidents"):
 port = os.environ.get("PORT", "8710")
 print(f"\n  Agent Allowance - " + ("Airwallex SANDBOX demo (practice money)" if SANDBOX else "offline demo (simulated Airwallex, nothing leaves this machine)") + "\n"
       f"  Open http://127.0.0.1:{port}  and sign in with token:  zach   (second operator: jordan)\n"
-      f"  AI: {server.AGENT.nice}\n")
+      f"  {server.AGENT.nice}\n")
 server.main()

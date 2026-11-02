@@ -1,0 +1,9 @@
+{
+  "name": "Agent Allowance - try the demo",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "containerEnv": { "HOST": "0.0.0.0", "PORT": "8710", "AGENT_PROVIDER": "pollinations" },
+  "postAttachCommand": "python3 demo.py",
+  "forwardPorts": [8710],
+  "portsAttributes": { "8710": { "label": "Agent Allowance demo", "onAutoForward": "openBrowser" } },
+  "customizations": { "codespaces": { "openFiles": ["README.md"] } }
+}
