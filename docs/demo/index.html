@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Allowance · Payment Incident Desk</title><link rel="stylesheet" href="app.css"><script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script><script defer src="boot.js"></script><script defer src="app.js"></script><script defer src="tour.js"></script></head>
+<body>
+<div id="boot" style="position:fixed;inset:0;z-index:99999;background:#0f1419;color:#eef2f6;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;font:18px -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;padding:20px;transition:opacity .4s"><div style="font-size:30px;font-weight:800;color:#ff7a45">Agent Allowance</div><div id="bootmsg">Starting the demo…</div><div style="color:#9aa5b1;font-size:14px;max-width:520px">The real app code runs right here in your browser - no install, no account. Airwallex is simulated, so nothing real can be paid.</div></div>
+<header class="top">
+  <div class="brand"><b>Agent Allowance</b><span>Payment Incident Desk</span></div>
+  <span class="env" id="env">Browser demo · simulated Airwallex · fake money</span>
+  <div class="budget" id="budget"></div>
+  <span class="agentname" id="agentname"></span>
+  <button id="advtoggle" class="advbtn">Advanced (testers)</button>
+  <button id="kill" class="kill">STOP all payments</button>
+</header>
+<div id="resume" class="resume" hidden><form id="resumeform" class="row"><input id="resumenote" placeholder="Why is it safe to resume? (kept in the log)"><button class="primary">Resume payments</button></form></div>
+<div id="pending" class="pendingbar" hidden></div>
+<div id="gate" class="gate" hidden>
+  <form id="gateform"><h2>Operator sign-in</h2><p>Enter the operator token this desk was started with. The AI agent never has it.</p>
+  <input id="tok" type="password" autocomplete="current-password" placeholder="Operator token"><button>Open desk</button></form>
+</div>
+<main class="grid">
+  <aside class="side">
+    <section class="card adv">
+      <h3>New supplier payment</h3>
+      <form id="newinc" class="row">
+        <label>Invoice <input name="invoice" placeholder="INV-1042"></label>
+        <label>Amount (USD) <input name="amount" value="250.00" inputmode="decimal"></label>
+        <label class="chk"><input type="checkbox" name="separate_invoice"> separate invoice (same amount OK)</label>
+        <button>Open incident</button>
+      </form>
+      <p class="hint">Pays the one supplier on the allowlist: <b id="benname">—</b></p>
+    </section>
+    <section class="card"><h3>Incidents</h3><ol id="list" class="list"></ol></section>
+    <section class="card legend adv"><h3>How to read the log</h3>
+      <p><i class="pv observed"></i>Observed - read back from Airwallex</p>
+      <p><i class="pv decided"></i>Decided - enforced by code</p>
+      <p><i class="pv model"></i>Model - the AI's opinion</p>
+      <p><i class="pv operator"></i>Operator - a person did it</p>
+      <p><i class="pv untrusted"></i>Untrusted - supplier text, never obeyed</p>
+    </section>
+  </aside>
+  <section id="detail" class="detail"><p class="empty">Open an incident to start.</p></section>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body></html>

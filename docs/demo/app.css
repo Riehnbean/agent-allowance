@@ -1,0 +1,69 @@
+:root{--bg:#0f1418;--card:#171e24;--line:#26313b;--ink:#e7edf2;--mute:#93a3b2;--accent:#ff6a3d;--ok:#3fbf7f;--warn:#e5a83b;--bad:#ef5b5b;--blue:#5aa9ff;--violet:#b18cff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+button,select,input{font:inherit}button{background:#22303b;color:var(--ink);border:1px solid #334452;border-radius:7px;padding:7px 12px;cursor:pointer}button:hover:not(:disabled){border-color:#5d7387}button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#1b0d06;font-weight:650}
+input,select{background:#0e1318;color:var(--ink);border:1px solid #334452;border-radius:7px;padding:7px 9px}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 18px;background:#0b1014;border-bottom:1px solid var(--line)}
+.brand b{font-size:16px}.brand span{color:var(--mute);margin-left:8px}
+.env{background:#2b2210;color:#ffc970;border:1px solid #6b5220;border-radius:12px;padding:2px 10px;font-weight:600;font-size:12px}
+.budget{color:var(--mute);font-size:13px}.agentname{color:var(--violet);font-size:13px}
+.kill{margin-left:auto;background:#3a1516;border-color:#7a2a2b;color:#ffb3b3;font-weight:700}.kill[data-on="1"]{background:var(--bad);color:#fff}
+.grid{display:grid;grid-template-columns:320px 1fr;gap:16px;padding:16px;max-width:1400px;margin:0 auto}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.card h3{margin:0 0 10px;font-size:14px;color:#c9d6e2}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}.row label{display:flex;flex-direction:column;gap:3px;color:var(--mute);font-size:12px}.row input{width:130px}.tricks .row input{flex:1;min-width:220px}
+.hint{color:var(--mute);font-size:12px;margin:8px 0 0}
+.list{list-style:none;margin:0;padding:0;display:grid;gap:6px}.inc{width:100%;display:flex;gap:8px;align-items:center;text-align:left}.inc.sel{border-color:var(--accent)}.inc .amt{margin-left:auto;color:var(--mute)}
+.st{font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid}.st-OPEN{color:var(--blue);border-color:#2d4f74}.st-ESCALATED{color:var(--warn);border-color:#6b5220}.st-RESOLVED{color:var(--ok);border-color:#2a6047}
+.legend p{margin:4px 0;color:var(--mute);font-size:12px;display:flex;gap:8px;align-items:center}
+.pv{display:inline-block;width:10px;height:10px;border-radius:3px;flex:none}.pv.observed{background:var(--blue)}.pv.decided{background:var(--ok)}.pv.model{background:var(--violet)}.pv.operator{background:var(--accent)}.pv.untrusted{background:var(--bad)}
+.dhead{display:flex;align-items:center;gap:12px;margin-bottom:12px}.dhead h2{margin:0;font-size:20px}.big{font-size:20px;font-weight:700}
+.agent{border-color:#4b3a7a}.agtop{display:flex;justify-content:space-between;align-items:center}.agtop h3{margin:0}
+.decision{display:inline-block;margin:12px 0 4px;font-size:22px;font-weight:800;letter-spacing:.04em;padding:4px 14px;border-radius:8px}
+.d-WAIT{background:#1d2c3d;color:var(--blue)}.d-REPLACE{background:#173527;color:var(--ok)}.d-ESCALATE{background:#3a2d12;color:var(--warn)}.d-CLOSE{background:#1d3324;color:var(--ok)}
+.agent ul{margin:6px 0 0;padding-left:18px}.agent li{margin:3px 0}
+.pay{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid var(--line);padding:10px 0}.pay:first-of-type{border-top:0}
+.pay>div:first-child{display:flex;flex-direction:column;gap:3px}.pay b{margin-right:8px}.pay small{color:var(--mute);font-size:11px}
+.pill{display:inline-block;font-size:11px;font-weight:700;border-radius:10px;padding:1px 9px;margin-left:6px;background:#22303b}
+.p-PAID{background:#1f4d34;color:#9ff0c4}.p-CANCELLED{background:#4a1f20;color:#ffb3b3}.p-UNKNOWN{background:#4a3a12;color:#ffd98a}.p-SENT,.p-PROCESSING,.p-SCHEDULED{background:#1d3550;color:#a9d1ff}
+.fail{color:#ff9d9d;font-size:12px}
+.payacts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.sim{display:flex;gap:6px;align-items:center;flex-wrap:wrap;border:1px dashed #3b4b59;border-radius:8px;padding:4px 6px}.sim small{color:var(--mute)}
+.warnbtn{border-color:#7a2a2b}
+.btns{display:flex;gap:8px;flex-wrap:wrap}.btnlink{color:var(--blue);align-self:center;margin-left:4px}
+.tricks{border-style:dashed}
+.log{list-style:none;margin:0;padding:0;max-height:360px;overflow:auto}.log li{display:flex;gap:8px;align-items:baseline;padding:4px 0;border-top:1px solid #1f2830;font-size:12px}.log time{color:var(--mute);white-space:nowrap}.log b{white-space:nowrap}.log span{color:#b8c6d3}
+.empty{color:var(--mute);padding:30px}
+.gate{position:fixed;inset:0;background:#0b1014ee;display:flex;align-items:center;justify-content:center;z-index:20}.gate form{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px;max-width:380px;display:grid;gap:10px}.gate h2{margin:0}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(30px);opacity:0;background:#20303c;border:1px solid #3d5466;border-radius:9px;padding:10px 16px;transition:.2s;max-width:90vw;z-index:30}.toast.on{opacity:1;transform:translateX(-50%)}.toast[data-bad="1"]{background:#3a1718;border-color:#7a2a2b}
+[hidden]{display:none!important}
+.pay>div:first-child>div,.pay .pill{align-self:flex-start}
+.pay>div:first-child{align-items:flex-start}
+
+.alert{background:#3a1718;border:1px solid #7a2a2b;color:#ffd0d0;border-radius:10px;padding:10px 14px;margin-bottom:12px}
+.note{min-width:240px}
+button.primary:disabled{background:#2a333b;border-color:#3a4652;color:#8796a4}
+.row label.chk{flex-direction:row;align-items:center;gap:6px}.row label.chk input{width:auto}
+
+.resume{background:#2b1414;border-bottom:1px solid #7a2a2b;padding:10px 18px}.resume input{min-width:420px}
+.pendingbar{background:#1d2633;border-bottom:1px solid #3d5466;padding:8px 18px;display:grid;gap:6px}.pend{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.pend small{color:var(--mute)}
+.agtop{gap:10px}.aitag{font-size:12px;border-radius:10px;padding:2px 9px;margin-left:auto;margin-right:8px}.ai-ready{color:#9ff0c4;background:#1f4d34}.ai-think{color:#d6c4ff;background:#2b2244;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.55}}
+/* The status message never blocks taps (it used to sit invisibly over the buttons near the bottom). */
+.toast{pointer-events:none}
+/* Phones: the tall header no longer sticks over the page and hides buttons while scrolling; buttons scroll clear of it. */
+@media (max-width:700px){.top{position:static}}
+html{scroll-padding-top:90px}@media (max-width:700px){html{scroll-padding-top:12px}}
+
+/* Simple view: plain-English summary first, tester tools hidden */
+body.simple .adv{display:none!important}
+.advbtn{background:transparent;border:1px solid #3a4654;color:#c9d1d9;border-radius:8px;padding:6px 12px;cursor:pointer;margin-right:8px}
+.card.story .plain{font-size:18px;margin:4px 0 10px}
+.card.story blockquote.said{margin:6px 0;padding:10px 14px;background:#fff;color:#1c2128;border-radius:10px;font-size:16px}
+.card.story .steps{display:flex;gap:10px;flex-wrap:wrap;padding:0;margin:12px 0 0;list-style:none;counter-reset:s}
+.card.story .steps li{counter-increment:s;background:#1f2a35;border-radius:999px;padding:6px 14px;font-size:14px}
+.card.story .steps li::before{content:counter(s);display:inline-block;width:20px;height:20px;border-radius:50%;background:#ff7a45;color:#111;text-align:center;font-weight:700;margin-right:8px;line-height:20px}
+.plaindec{font-size:20px;font-weight:600;margin:6px 0 4px}
+
+.fxbig{font-size:17px;font-weight:700;color:#ff7a45;margin:6px 0}
+@media (min-width:900px){section.card:has(#list){position:sticky;top:12px;align-self:start}}

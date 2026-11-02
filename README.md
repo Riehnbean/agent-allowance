@@ -1,8 +1,10 @@
 # Agent Allowance — Payment Incident Desk
 
-[![Open the live demo in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Riehnbean/agent-allowance?quickstart=1)
+### ▶ [Try the live demo - opens in about 5 seconds, nothing to install](https://riehnbean.github.io/agent-allowance/demo/)
 
-**Try it in your browser:** click the button above, wait about a minute, and the desk opens in a new tab. Sign in with token `zach` (a second operator is `jordan`). It runs on an offline stand-in for the Airwallex sandbox (no keys, nothing real moves) with a free open-source AI (GPT-OSS via Pollinations) giving the advice.
+The real app code runs right in your browser (via Pyodide), with a 2-minute guided tour. Airwallex is simulated there, so nothing real can be paid.
+
+Prefer a full dev environment? [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Riehnbean/agent-allowance?quickstart=1) - wait about a minute and the desk opens in a new tab. Sign in with token `zach` (a second operator is `jordan`). It runs on an offline stand-in for the Airwallex sandbox (no keys, nothing real moves) with a free open-source AI (GPT-OSS via Pollinations) giving the advice.
 
 
 **Airwallex Agentic Banking Hackathon · Treasury & Ops · Starter Kit 03 (Payment Ops Incident Commander)**
