@@ -2,7 +2,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const el = (t, cls, text) => { const e = document.createElement(t); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 let token = ""; try { token = sessionStorage.getItem("op-token") || ""; } catch {}
-let S = null, current = null;
+let S = null, current = null; const fxCache = {};
 const usd = c => "$" + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const money = (c, ccy) => !ccy || ccy === "USD" ? usd(c) : (ccy === "EUR" ? "€" : ccy + " ") + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const when = t => new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit", second: "2-digit" }) + " CT";
@@ -61,13 +61,17 @@ async function load(quiet) {
   const list = $("#list"); list.replaceChildren();
   for (const i of S.incidents) {
     const li = el("li"); const b = el("button", "inc" + (current === i.id ? " sel" : ""));
-    b.append(el("b", null, i.invoice), el("span", "amt", money(i.amount, i.currency)), el("span", "st st-" + i.state, i.state));
+    b.append(el("b", null, i.invoice), el("span", "amt", money(i.amount, i.currency)), el("span", "st st-" + i.state, stateLabel(i.state)));
     b.onclick = () => { current = i.id; render(); }; li.append(b); list.append(li);
   }
-  if (!current && S.incidents[0]) current = S.incidents[0].id;
+  if (!current && S.incidents[0]) current = (S.incidents.find(i => i.invoice === "INV-1042") || S.incidents[0]).id;
   render();
 }
 
+const PLAIN_STATE = { OPEN: "Open", ESCALATED: "Needs a person", RESOLVED: "Done" };
+const stateLabel = st => PLAIN_STATE[st] || st;
+const PLAIN_FAIL = { CHANNEL_TIMEOUT: "bank connection timed out", BENEFICIARY_BANK_RETURNED: "the supplier's bank sent it back", INVALID_ACCOUNT: "account number not valid", ACCOUNT_CLOSED: "account is closed", INSUFFICIENT_FUNDS: "not enough money in the account", COMPLIANCE_REJECTED: "blocked by a compliance check", CANCELLED_BY_USER: "cancelled by a person" };
+const failLabel = f => PLAIN_FAIL[f] || String(f || "").replace(/_/g, " ").toLowerCase();
 function pill(status) { return el("span", "pill p-" + status, status); }
 let advanced = false; try { advanced = localStorage.getItem("adv") === "1"; } catch {}
 const PLAIN_STATUS = { RESERVED: "being sent", UNKNOWN: "unclear - checking with Airwallex", CREATED: "on its way", SCHEDULED: "on its way", PROCESSING: "on its way",
@@ -75,6 +79,8 @@ const PLAIN_STATUS = { RESERVED: "being sent", UNKNOWN: "unclear - checking with
 const PLAIN_DECISION = { ESCALATE: "Get a person to check", REPLACE: "Safe to send it again", WAIT: "Wait - it's still on its way", CLOSE: "Done - it was paid" };
 function whatHappened(i) {
   const last = i.payments[i.payments.length - 1];
+  if (last && last.status === "PAID") { const got = (i.events || []).filter(e => e.kind === "supplier_message").map(e => /\$\s?([\d,]+(?:\.\d\d)?)/.exec(e.body.text || "")).filter(Boolean).map(m => Math.round(parseFloat(m[1].replace(/,/g, "")) * 100)).find(c => c > 0 && c < last.amount);
+    if (got) return `Paid ${money(last.amount, last.currency)} via Airwallex, but the supplier says only ${money(got, last.currency)} arrived - a ${money(last.amount - got, last.currency)} gap (often a bank or middle-bank fee). Topping up a short payment is left to a person on purpose: confirm the fee with the supplier first.`; }
   if (i.alert) return `A safety alarm is on (${i.alert.replace(/_/g, " ").toLowerCase()}). Payments here are frozen until a person checks.`;
   if (!last) return "Nothing has been sent yet. A person needs to approve the payment first.";
   const why = last.failure_message ? ` (bank said: "${last.failure_message}")` : "";
@@ -87,7 +93,7 @@ function render() {
   if (!i) { d.append(el("p", "empty", "Open an incident to start.")); return; }
   [...document.querySelectorAll(".inc")][S.incidents.indexOf(i)]?.classList.add("sel");
   const head = el("div", "dhead");
-  head.append(el("h2", null, `${i.supplier} · ${i.invoice}`), el("span", "big", money(i.amount, i.currency)), el("span", "st st-" + i.state, i.state));
+  head.append(el("h2", null, `${i.supplier} · ${i.invoice}`), el("span", "big", money(i.amount, i.currency)), el("span", "st st-" + i.state, stateLabel(i.state)));
   d.append(head);
   if (i.alert) { const al = el("div", "alert"); al.append(el("b", null, "Safety alarm: " + i.alert.replace(/_/g, " ")), el("span", null, " - new payments on this incident are frozen until a person resolves it.")); d.append(al); }
   if (S.policy.killed) { const al = el("div", "alert"); al.append(el("b", null, "STOP is on: "), el("span", null, S.policy.killed_reason || "")); d.append(al); }
@@ -118,7 +124,8 @@ function render() {
     ag.append(el("p", "answered", i.decision.provenance === "model" || /AI|Claude|GPT/i.test(i.decision.answered_by || "") ? "Answered by: " + (i.decision.answered_by || "the AI") : "Answered by the safety rulebook (the AI wasn't reachable just then, so plain code answered)"));
     const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
     ag.append(el("p", "hint adv", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
-  } else ag.append(el("p", "hint", "The agent can only pick from: " + i.allowed.join(", ") + ". It cannot pay, approve or change who gets paid."));
+  } else if (!i.payments.length) ag.append(el("p", "hint", "Nothing has gone wrong yet. The AI helps once a payment fails or the supplier disputes it."));
+  else ag.append(el("p", "hint", "The AI can only advise. It cannot pay, approve or change who gets paid."));
   d.append(ag);
 
   // Payments
@@ -127,7 +134,7 @@ function render() {
   for (const p of i.payments) {
     const row = el("div", "pay");
     const l = el("div"); l.append(el("b", null, p.role === "original" ? "Original" : "Replacement"), pill(p.status));
-    if (p.failure_type) l.append(el("span", "fail", p.failure_type + (p.failure_message ? ` - "${p.failure_message}"` : "")));
+    if (p.failure_type) l.append(el("span", "fail", failLabel(p.failure_type) + (p.failure_message ? ` - "${p.failure_message}"` : "")));
     if (p.anomaly) l.append(el("span", "fail", "⚠ " + p.anomaly.replace(/_/g, " ")));
     if (p.fx_quote_id) l.append(el("div", "fxbig", `${money(p.amount, p.currency)} = ${usd(p.cost_amount)} - Airwallex rate locked · checked against your ${usd(S.policy.per_tx_cap)} limit`));
     if (p.fx_quote_id) l.append(el("small", "adv", `Locked FX: ${money(p.amount, p.currency)} = ${usd(p.cost_amount)} at ${p.fx_rate} (Airwallex quote, counted against USD caps)`));
@@ -165,18 +172,20 @@ function render() {
   d.append(ps);
 
   // Operator actions
-  const op = el("section", "card"); op.append(el("h3", null, "Operator (you)"));
+  const op = el("section", "card"); op.append(el("h3", null, "You"));
   const ops = el("div", "btns");
   const role = i.payments.length ? "replacement" : "original";
   const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
   const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
-  const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - status ${r.status}`); pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
-  const note = el("input", "note"); note.placeholder = i.alert ? "Resolution note (required: what you checked)" : "Optional note"; 
+  const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - ${PLAIN_STATUS[r.status] || r.status.toLowerCase()}`); pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
+  const note = el("input", "note"); note.placeholder = "Note: what you checked (needed to close)"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
+  close.onclick = () => { if (!note.value.trim()) { note.focus(); return toast("Write a short note first - what you checked before closing", true); } act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident closed"); };
   const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); try { const r = await api(`/api/incidents/${i.id}/receipt`); const L = [`RECEIPT - ${i.supplier} ${i.invoice} - ${money(i.amount, i.currency)}`, `Environment: ${r.environment}`, `Log intact: ${r.log_integrity.intact ? "yes" : "NO"} (${r.log_integrity.entries_checked} entries checked)`, ""];
     for (const x of r.proof_of_payment || []) L.push(`PAID: Airwallex transfer ${x.airwallex_transfer_id} (${x.role})`);
+    for (const a of i.approvals || []) L.push(`APPROVAL #${a.id}: ${a.role} ${money(a.amount, i.currency)} - approved by ${a.approved_by}${a.cosigned_by ? ", co-signed by " + a.cosigned_by : ""}${a.used_by_request ? " (used once)" : ""}`);
     L.push("", "What happened, step by step (source in brackets):");
-    for (const e of r.events.filter(e => e.incident_id)) L.push(`${new Date(e.at * 1000).toISOString().slice(0, 19).replace("T", " ")}  [${e.provenance}] ${e.kind.replace(/_/g, " ")}  #${(e.hash || "").slice(0, 10)}`);
+    for (const e of r.events.filter(e => e.incident_id)) L.push(`${new Date(e.at * 1000).toISOString().slice(0, 19).replace("T", " ")}  [${e.provenance}] ${e.kind.replace(/_/g, " ")}${e.actor && e.provenance === "operator" ? " by " + e.actor : ""}  #${(e.hash || "").slice(0, 10)}`);
     L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text", "", "Full machine-readable receipt follows:", JSON.stringify(r, null, 1));
     const a = el("a"); a.href = URL.createObjectURL(new Blob([L.join("\n")], { type: "text/plain" })); a.download = `receipt-${i.invoice}.txt`; a.click(); } catch (err) { toast(err.message, true); } };
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
@@ -184,17 +193,24 @@ function render() {
   if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";
   const csv = el("a", "btnlink", "Log as spreadsheet (CSV)"); csv.href = "#"; csv.onclick = async e => { e.preventDefault(); try {
     const r = await api(`/api/incidents/${i.id}/receipt`); const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows = [["time_utc", "source", "event", "actor", "details", "hash"].join(",")].concat(r.events.filter(e => e.incident_id).map(e =>
-      [new Date(e.at * 1000).toISOString(), e.provenance, e.kind, e.actor, JSON.stringify(e.body), e.hash].map(q).join(",")));
+    const dollars = c => c == null || c === "" ? "" : (c / 100).toFixed(2);
+    const rows = [["time_utc", "invoice", "supplier", "event", "by", "source", "amount", "currency", "status", "request_id", "airwallex_transfer_id", "details", "hash"].join(",")].concat(r.events.filter(e => e.incident_id).map(e => { const b = e.body || {};
+      return [new Date(e.at * 1000).toISOString(), i.invoice, i.supplier, e.kind.replace(/_/g, " "), e.actor, e.provenance, dollars(b.amount), b.currency || "", b.status || "", b.request_id || "", b.provider_id || "", JSON.stringify(b), e.hash].map(q).join(","); }));
     const a = el("a"); a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" })); a.download = `log-${i.invoice}.csv`; a.click(); } catch (err) { toast(err.message, true); } };
   ops.append(ap, pay, note, reopen, close, rc, csv); op.append(ops);
+  if (i.currency !== S.policy.currency && !i.payments.some(p => p.status === "PAID")) {   // show the dollar cost before anyone approves
+    const fx = el("p", "fxbig", "Checking today's Airwallex rate…"); op.append(fx);
+    const c = fxCache[i.id]; const get = c && Date.now() - c.t < 120000 ? c.p : (fxCache[i.id] = { t: Date.now(), p: api(`/api/incidents/${i.id}/fx-preview`, {}) }).p;
+    get.then(q => { if (q.cost) fx.textContent = `${money(i.amount, i.currency)} ≈ ${usd(q.cost)} at Airwallex's rate ${q.rate}${q.mid_rate ? " (market " + q.mid_rate + ")" : ""}. This dollar amount is what the ${usd(S.policy.dual_approval_over)} co-sign and ${usd(S.policy.per_tx_cap)} limits check. The rate is locked when you press Send.`; })
+      .catch(() => { delete fxCache[i.id]; fx.textContent = "Couldn't get a rate right now - the exact dollar cost is locked and checked when you press Send."; });
+  }
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
     if (unused.approved_by !== S.me) {
       const cb = el("button", "primary", `Co-sign ${money(i.amount, i.currency)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
       op.append(cb);
     } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${S.me} must open this desk with their own sign-in and co-sign.`));
   }
-  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${money(unused.amount, i.currency)}, ${i.currency}, expires ${when(unused.expires_at)}.` : (i.payments.length && !["CANCELLED"].includes(i.payments[i.payments.length - 1].status) ? "Sent ✓ - that approval is used up, so this payment can't be sent twice." : "Every payment needs its own approval. An approval works once.")));
+  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${money(unused.amount, i.currency)}, ${i.currency}, expires ${when(unused.expires_at)}.` : (i.payments.length && i.approvals.some(a => a.used_by_request) && !["CANCELLED"].includes(i.payments[i.payments.length - 1].status) ? "Sent ✓ - that approval is used up, so this payment can't be sent twice." : "Every payment needs its own approval. An approval works once.")));
   d.append(op);
 
   // Try to break it

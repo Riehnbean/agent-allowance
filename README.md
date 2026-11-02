@@ -2,7 +2,7 @@
 
 ### ▶ [Try the live demo - opens in about 5 seconds, nothing to install](https://riehnbean.github.io/agent-allowance/demo/)
 
-The real app code runs right in your browser (via Pyodide), with a 2-minute guided tour. Airwallex is simulated there, so nothing real can be paid.
+The real app code runs right in your browser (via Pyodide), with a short guided tour. Airwallex is simulated there, so nothing real can be paid.
 
 Prefer a full dev environment? [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/Riehnbean/agent-allowance?quickstart=1) - wait about a minute and the desk opens in a new tab. Sign in with token `zach` (a second operator is `jordan`). It runs on an offline stand-in for the Airwallex sandbox (no keys, nothing real moves) with a free open-source AI (GPT-OSS via Pollinations) giving the advice.
 
@@ -76,7 +76,7 @@ export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (n
 # a click never waits more than AGENT_CLICK_BUDGET (default 6s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
-python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review tests.test_nov1_review tests.test_nov1_verify tests.test_indep tests.test_r3_provider tests.test_r3_normalizer tests.test_r3_concurrency tests.test_watchdog tests.test_fx tests.test_wd_approve tests.test_verify_payee tests.test_r4_review  # 177 test runs, no network
+python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review tests.test_nov1_review tests.test_nov1_verify tests.test_indep tests.test_r3_provider tests.test_r3_normalizer tests.test_r3_concurrency tests.test_watchdog tests.test_fx tests.test_wd_approve tests.test_verify_payee tests.test_r4_review tests.test_r5_review  # 179 test runs, no network
 python3 -m watchdog.cycle --minutes 3   # Watchdog: attack, auto-repair behind gates (needs ANTHROPIC_API_KEY to repair), report
 python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
 AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)

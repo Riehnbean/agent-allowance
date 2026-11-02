@@ -303,6 +303,14 @@ def handle(method, path, body, op="operator"):
             amt = cents(body["amount"]) if body.get("amount") else inc["amount"]
             ben = body.get("beneficiary_id") or inc["beneficiary_id"]
             return SVC.pay(unused_approval(iid, role), role, ben, amt, inc["currency"])
+        if act == "fx-preview":
+            # read-only estimate so the person approving sees the dollar cost; the real rate is locked again at Send
+            pol = SVC.s.policy()
+            if inc["currency"] == pol["currency"]:
+                return {"same_currency": True}
+            q = SVC.p.fx_quote(pol["currency"], inc["currency"], inc["amount"])
+            return {"cost": round(float(q["sell_amount"]) * 100), "rate": float(q["client_rate"]),
+                    "mid_rate": float(q.get("mid_rate") or 0) or None, "valid_to_at": q.get("valid_to_at")}
         if act == "agent":
             return run(SVC, iid, LLMAgent())  # one agent object per request: no shared per-call flags between threads
         if act == "supplier":

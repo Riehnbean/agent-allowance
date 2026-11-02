@@ -7,7 +7,7 @@ try { sessionStorage.setItem("op-token", sessionStorage.getItem("op-token") || "
 const SHIM = `
 import os, sys, json, threading
 os.environ.update(DEMO="1", OPERATOR_TOKENS="zach:zach,jordan:jordan", ALLOWANCE_DB="/tmp/demo.db",
-                  WATCHDOG_EVERY="0", AGENT_PROVIDER="pollinations", THINK_AHEAD="0", DEMO_COSIGN_OVER="20000")
+                  WATCHDOG_EVERY="0", RECEIPT_ENV="Simulated Airwallex (browser demo) - no real money", AGENT_PROVIDER="pollinations", THINK_AHEAD="0", DEMO_COSIGN_OVER="20000")
 sys.path.insert(0, "/app")
 sys.argv = ["demo.py"]
 

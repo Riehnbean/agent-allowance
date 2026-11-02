@@ -157,6 +157,10 @@ class RulesAgent:
             if any(NOT_RECEIVED.search(m or "") for m in ev["supplier_messages"]):
                 return "ESCALATE", reasons + ["Airwallex shows this invoice PAID, but the supplier says they never got it. Do NOT pay again: send them the "
                                               "Airwallex payment confirmation (transfer ID in the receipt) and ask their bank to trace it."]
+            if any((m or "").strip() for m in ev["supplier_messages"]):
+                # the rulebook can't read a complaint (e.g. "only $280 of $300 arrived"), so it never closes over one
+                return "ESCALATE", reasons + ["Airwallex shows this invoice PAID, but the supplier has written in about it. "
+                                              "A person should read their message before this is closed - do NOT pay again until they have."]
             return "CLOSE", reasons + ["A transfer on this incident is confirmed PAID by Airwallex and every other payment has a final status."]
         if fraud:
             return "ESCALATE", reasons

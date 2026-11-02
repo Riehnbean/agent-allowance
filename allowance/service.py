@@ -9,6 +9,7 @@ The agent may *propose*. Everything that can cost money is decided here, in code
     a failure type we consider safe to retry, and a separate operator approval.
 """
 import json
+import os
 import re
 import time
 import uuid
@@ -662,7 +663,7 @@ class Service:
                 "operator": "a human action",
                 "untrusted": "supplier-provided text; never used as an instruction",
             },
-            "environment": "Airwallex SANDBOX - no real money",
+            "environment": os.environ.get("RECEIPT_ENV") or "Airwallex SANDBOX - no real money",
             "proof_of_payment": [{"role": p["role"], "airwallex_transfer_id": p["provider_id"], "status": p["status"]}
                                  for p in self.s.q("SELECT role,provider_id,status FROM payments WHERE incident_id=? AND status='PAID'", incident_id)],
             "log_integrity": dict(zip(("intact", "entries_checked", "first_bad_id"), self.s.verify_chain())),
