@@ -44,6 +44,8 @@ def seed():
     def paid_then(invoice, amount, status, failure=None):
         iid = svc.open_incident("Maple Lumber", invoice, ben, amount, "USD", deadline=day, allow_similar=True)
         ap = svc.approve(iid, "original", "zach")
+        if amount > int(os.environ.get("DEMO_COSIGN_OVER") or 20000):
+            svc.cosign(ap, "jordan")   # the seeded history follows the same two-person rule the demo shows
         p = svc.pay(ap, "original", ben, amount, "USD")
         api.simulate(p["provider_id"], "SENT")
         api.simulate(p["provider_id"], status, failure)

@@ -43,5 +43,40 @@ class ServerTypeChecks(unittest.TestCase):
                 server.handle("POST", "/api/incidents", body, "zach")
 
 
+class Round4(unittest.TestCase):
+    def setUp(self):
+        from tests.test_allowance import Base
+        self.b = Base(); self.b.setUp(); self.svc = self.b.svc
+
+    def tearDown(self):
+        self.b.tearDown()
+
+    def test_approve_checks_role_state_and_stop(self):
+        from allowance.service import Refused
+        iid = self.b.incident()
+        for bad in (None, "x", "admin"):
+            with self.assertRaises(Refused):
+                self.svc.approve(iid, bad, "zach")
+        self.svc.kill("zach", "test")
+        with self.assertRaisesRegex(Refused, "STOP"):
+            self.svc.approve(iid, "original", "zach")
+
+    def test_cosign_twice_is_refused(self):
+        from allowance.service import Refused
+        iid = self.b.incident()
+        ap = self.svc.approve(iid, "original", "zach")
+        self.svc.cosign(ap, "jordan")
+        with self.assertRaisesRegex(Refused, "already co-signed"):
+            self.svc.cosign(ap, "jordan")
+
+
+class ServerRound4(unittest.TestCase):
+    def test_oversized_invoice_is_refused_before_anything_is_created(self):
+        import server
+        from allowance.service import Refused
+        with self.assertRaisesRegex(Refused, "cap"):
+            server.handle("POST", "/api/incidents", {"amount": "9999999.99"}, "zach")
+
+
 if __name__ == "__main__":
     unittest.main()

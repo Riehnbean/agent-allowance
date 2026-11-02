@@ -67,6 +67,7 @@ window.__pyReady = (async () => {
     for (const part of parts.slice(1, -1)) { d += "/" + part; try { py.FS.mkdir(d); } catch {} }
     py.FS.writeFile("/app/" + p, src);
   }
+  try { window.__recorded = await (await _fetch("recorded.json")).json(); } catch {}
   setStatus("Setting up four example payments…");
   py.runPython(SHIM);
   // The free AI is called synchronously from Python, so only use it if it answers quickly right now.
@@ -90,6 +91,12 @@ window.fetch = async (url, opt = {}) => {
   const h = opt.headers || {};
   const res = py.globals.get("route")(opt.method || "GET", u.pathname.slice(i), h["X-Operator-Token"] || "", opt.body || "");
   const [status, body] = res.toJs(); res.destroy();
+  if (status === 200 && /\/incidents\/\d+\/(pay|resend)$/.test(u.pathname)) {
+    // simulated Airwallex: the bank delivers a sent payment a few seconds later (the real sandbox needs a manual step)
+    try { const rid = JSON.parse(body).request_id; const tok = h["X-Operator-Token"] || "";
+      if (rid) setTimeout(async () => { for (const s of ["SENT", "PAID"]) await window.fetch(`/api/payments/${rid}/simulate`, { method: "POST", headers: { "Content-Type": "application/json", "X-Operator-Token": tok }, body: JSON.stringify({ status: s }) });
+        if (typeof load === "function") load(true).catch(() => {}); }, 4000); } catch {}
+  }
   return new Response(body, { status, headers: { "Content-Type": "application/json" } });
 };
 

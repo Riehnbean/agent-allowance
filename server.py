@@ -182,6 +182,13 @@ def _short(x):
     return hashlib.sha256(str(x).encode()).hexdigest()[:12]
 
 
+def reopen_target(iid):
+    """A reopen request is bound to what the requester saw: the alarm and the newest payment's status."""
+    inc = SVC.s.one("SELECT alert FROM incidents WHERE id=?", iid)
+    last = SVC.s.one("SELECT request_id,status FROM payments WHERE incident_id=? ORDER BY created_at DESC LIMIT 1", iid)
+    return f"{iid}|{inc['alert'] if inc else ''}|{(last['request_id'] + ':' + last['status']) if last else ''}"
+
+
 def unused_approval(iid, role):
     a = SVC.s.one("SELECT id FROM approvals WHERE incident_id=? AND role=? AND used_by_request IS NULL ORDER BY id DESC LIMIT 1", iid, role)
     if not a:
@@ -244,7 +251,10 @@ def handle(method, path, body, op="operator"):
             # The desk stopped itself (payee edited, unknown transfers...). Two people resume it.
             # Bound to THIS stop: if the desk stops again for a different reason, the request no longer applies.
             return {"pending": SVC.request_action("unkill", "desk|" + _short(pol["killed_reason"]), body.get("note"), op)}
+        if not str(body.get("note") or "").strip():
+            raise Refused("write why it is safe to resume - it is kept in the evidence log")
         SVC.unkill(op, single_operator_mode=len(OPERATORS) <= 1)
+        SVC.s.log("operator", "resume_reason", "operator", None, by=op, note=str(body.get("note"))[:500])
         return {}
     if len(p) == 4 and p[1] == "pending" and p[3] == "confirm":
         pend = SVC.s.one("SELECT * FROM pending_actions WHERE id=?", int(p[2]))
@@ -256,6 +266,8 @@ def handle(method, path, body, op="operator"):
                 if not want or details_hash(checked) != want:
                     raise Refused("the payee's bank details at Airwallex changed after this request was made - "
                                   "the request no longer matches what was checked; ask again")
+            if pend["kind"] == "reopen" and reopen_target(int(pend["target"].split("|")[0])) != pend["target"]:
+                raise Refused("this invoice changed since the reopen was requested (new alarm or payment) - look again and ask again")
             if pend["kind"] == "unkill":
                 pol = SVC.s.policy()
                 if not pol["killed"] or "desk|" + _short(pol["killed_reason"]) != pend["target"]:
@@ -266,7 +278,7 @@ def handle(method, path, body, op="operator"):
         elif a["kind"] == "reverify":
             reverify(a["requested_by"], f"{a['note']} (confirmed by {op})", details=checked)
         elif a["kind"] == "reopen":
-            SVC.reopen(int(a["target"]), f"{a['requested_by']}+{op}", a["note"])
+            SVC.reopen(int(a["target"].split("|")[0]), f"{a['requested_by']}+{op}", a["note"])
         return {"done": a["kind"]}
     if path == "/api/demo/edit-payee":
         # Demo of an attacker / insider editing the payee inside Airwallex after it was approved.
@@ -294,6 +306,8 @@ def handle(method, path, body, op="operator"):
         PROV.armed = True
         return {}
     if path == "/api/incidents":
+        if cents(body.get("amount", "250")) > SVC.s.policy()["per_tx_cap"]:
+            raise Refused(f"over the per-payment cap of {SVC.s.policy()['per_tx_cap']/100:.2f} - split invoices need a person to set up")
         ben = ensure_beneficiary()
         iid = SVC.open_incident(body.get("supplier") or "Maple Lumber", body.get("invoice") or f"INV-{int(time.time()) % 10000}",
                                 ben, cents(body.get("amount", "250")), "USD", deadline=time.time() + float(body.get("deadline_hours", 24)) * 3600,
@@ -332,7 +346,7 @@ def handle(method, path, body, op="operator"):
             last = SVC.s.one("SELECT failure_type FROM payments WHERE incident_id=? ORDER BY created_at DESC LIMIT 1", iid)
             from allowance.service import DETAILS_PROBLEM, DELIBERATE
             if (serious or (last and last["failure_type"] in DETAILS_PROBLEM | DELIBERATE)) and len(OPERATORS) > 1:
-                return {"pending": SVC.request_action("reopen", iid, body.get("note"), op)}
+                return {"pending": SVC.request_action("reopen", reopen_target(iid), body.get("note"), op)}
             SVC.reopen(iid, op, body.get("note", ""))
             return {}
         if act == "release":
@@ -340,6 +354,8 @@ def handle(method, path, body, op="operator"):
         if act == "resend":
             return SVC.resend(body["request_id"], op)
         if act == "close":
+            if not str(body.get("note") or "").strip():
+                raise Refused("write a short note (what you checked) to close")
             SVC.close(iid, op, note=body.get("note"))
             return {}
     if len(p) >= 4 and p[1] == "payments":

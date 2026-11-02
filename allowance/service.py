@@ -133,10 +133,17 @@ class Service:
         return iid
 
     def approve(self, incident_id, role, operator, ttl=900, beneficiary_id=None, amount=None, currency=None):
+        if role not in ("original", "replacement"):
+            raise Refused("role must be original or replacement")
         inc = self._incident(incident_id)
+        if inc["state"] != "OPEN":
+            raise Refused(f"this invoice is {inc['state']} - nothing can be approved until a person reopens it")
+        if self.s.policy()["killed"]:
+            raise Refused("STOP is on - nothing can be approved until payments are resumed")
         b, a, c = beneficiary_id or inc["beneficiary_id"], amount or inc["amount"], currency or inc["currency"]
         if role == "replacement":
-            pays = self.s.q("SELECT status,status_source FROM payments WHERE incident_id=? ORDER BY created_at", incident_id)
+            pays = [p for p in self.s.q("SELECT status,status_source FROM payments WHERE incident_id=? ORDER BY created_at", incident_id)
+                    if p["status_source"] != "none"]   # rows blocked here before sending never reached Airwallex
             if not pays or any(in_flight(p["status"]) for p in pays) or pays[-1]["status"] != "CANCELLED" or pays[-1]["status_source"] != "provider_get":
                 raise Refused("a replacement can only be approved after Airwallex confirms the previous payment failed")
         if (b, a, c) != (inc["beneficiary_id"], inc["amount"], inc["currency"]):
@@ -177,7 +184,7 @@ class Service:
         with self.s.tx():
             cur = self.s.db.execute("INSERT INTO pending_actions(kind,target,note,requested_by,created_at) VALUES(?,?,?,?,?)",
                                     (kind, str(target), note.strip()[:1000], operator, self.now()))
-        self.s.log("operator", "two_person_requested", "operator", int(target) if kind == "reopen" else None,
+        self.s.log("operator", "two_person_requested", "operator", int(str(target).split("|")[0]) if kind == "reopen" else None,
                    action=kind, target=target, by=operator, note=note.strip()[:1000])
         return cur.lastrowid
 
@@ -192,7 +199,7 @@ class Service:
             if self.now() - a["created_at"] > 3600:
                 raise Refused("request expired - ask again")
             self.s.db.execute("UPDATE pending_actions SET done_by=?, done_at=? WHERE id=?", (operator, self.now(), pending_id))
-        self.s.log("operator", "two_person_confirmed", "operator", int(a["target"]) if a["kind"] == "reopen" else None,
+        self.s.log("operator", "two_person_confirmed", "operator", int(str(a["target"]).split("|")[0]) if a["kind"] == "reopen" else None,
                    action=a["kind"], target=a["target"], requested_by=a["requested_by"], confirmed_by=operator)
         return dict(a)
 
@@ -206,6 +213,8 @@ class Service:
                 raise Refused("the co-signer must be a different person than the first approver")
             if ap["used_by_request"]:
                 raise Refused("approval already used")
+            if ap["cosigned_by"]:
+                raise Refused(f"already co-signed by {ap['cosigned_by']}")
             self.s.db.execute("UPDATE approvals SET cosigned_by=? WHERE id=?", (operator, approval_id))
             self.s.log("operator", "cosigned", "operator", ap["incident_id"], approval_id=approval_id, by=operator)
 
@@ -577,7 +586,8 @@ class Service:
             acts.add("WAIT")
         if paid and not live:
             acts.add("CLOSE")
-        last = pays[-1] if pays else None
+        sent = [p for p in pays if p["status_source"] != "none"]   # ignore rows blocked here before sending
+        last = sent[-1] if sent else None
         if (not live and not paid and last and last["status"] == "CANCELLED" and last["status_source"] == "provider_get"
                 and last["failure_type"] in RETRYABLE and not ev["kill_switch"] and not ev["incident"]["alert"]):
             acts.add("REPLACE")
@@ -741,7 +751,10 @@ class Service:
             orig = [p for p in pays if p["role"] == "original"]
             if not orig:
                 raise Refused("no original payment to replace")
-            last = pays[-1]
+            sent = [p for p in pays if p["status_source"] != "none"]   # a replacement blocked here before sending never reached Airwallex
+            if not sent:
+                raise Refused("no original payment reached Airwallex - approve and send the original instead")
+            last = sent[-1]
             if ap["created_at"] < last["updated_at"]:
                 raise Refused("this approval was given before the last payment's outcome was known - approve again")
             if last["status"] != "CANCELLED" or last["status_source"] != "provider_get":

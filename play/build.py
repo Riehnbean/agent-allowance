@@ -16,7 +16,7 @@ for p in sorted(glob.glob(os.path.join(ROOT, "allowance", "*.py"))) + [os.path.j
 json.dump(files, open(os.path.join(OUT, "py.json"), "w"))
 for f in ("app.js", "app.css"):
     shutil.copy(os.path.join(ROOT, "web", f), os.path.join(OUT, f))
-for f in ("boot.js", "tour.js"):
+for f in ("boot.js", "tour.js", "recorded.json"):
     shutil.copy(os.path.join(ROOT, "play", f), os.path.join(OUT, f))
 html = open(os.path.join(ROOT, "web", "index.html"), encoding="utf-8").read()
 html = html.replace('href="/app.css"', 'href="app.css"')

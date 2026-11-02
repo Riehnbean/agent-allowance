@@ -1,0 +1,26 @@
+{
+ "INV-1042": {
+  "decision": "REPLACE",
+  "reasons": [
+   "The $250 payment was cancelled after a channel timeout and nothing was paid, with no warning signs, so sending a replacement payment is safe."
+  ],
+  "answered_by": "Claude Sonnet 5.5 (Anthropic)",
+  "at": "Nov 2, 2026"
+ },
+ "INV-1043": {
+  "decision": "ESCALATE",
+  "reasons": [
+   "A fraud signal is active and the supplier is asking us to send payment to new bank details, a classic payment-redirection scam, so a person must review."
+  ],
+  "answered_by": "Claude Sonnet 5.5 (Anthropic)",
+  "at": "Nov 2, 2026"
+ },
+ "INV-1044": {
+  "decision": "ESCALATE",
+  "reasons": [
+   "The supplier says they received $280 instead of the $300 we sent, so the payment may not have settled in full and a person should look into it."
+  ],
+  "answered_by": "Claude Sonnet 5.5 (Anthropic)",
+  "at": "Nov 2, 2026"
+ }
+}

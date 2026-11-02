@@ -74,3 +74,5 @@ body.simple .adv{display:none!important}
 .callback{margin-top:10px;padding:10px 12px;border-radius:10px;background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.5);font-weight:600}
 
 .wdbar{margin:10px 16px 0;padding:12px 16px;border-radius:12px;background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.5);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.stale{background:#2a2410;border:1px solid #6b5a1e;color:#e3c66b;border-radius:8px;padding:6px 10px;font-size:13px;margin:6px 0}
+.recorded{border:1px solid #6a4fb3;background:#1d1830;border-radius:10px;padding:10px 12px;margin-top:10px}.recorded b{color:#c297ff}.recorded p{margin:6px 0}.recorded small{color:var(--mute)}

@@ -489,9 +489,8 @@ class Holes(Base):
         p = self.pay_original(iid)
         self.fail_with(p["request_id"], "ACCOUNT_CLOSED")
         run(self.svc, iid, RulesAgent())  # escalates
-        ap = self.svc.approve(iid, "replacement", "zach")
-        with self.assertRaisesRegex(Refused, "ESCALATED|reopen"):
-            self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
+        with self.assertRaisesRegex(Refused, "ESCALATED|reopen"):   # refused already at approval (round-4 review)
+            self.svc.approve(iid, "replacement", "zach")
         with self.assertRaisesRegex(Refused, "note"):
             self.svc.reopen(iid, "zach", "ok")
         self.t += 10

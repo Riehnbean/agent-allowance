@@ -8,15 +8,17 @@
   const sent = () => on("INV-1042") && document.querySelectorAll("#detail div.pay").length >= 2;
   const STEPS = [
     { sel: "#list", t: "This is a payments desk for a company's accounts team. Each row is a supplier payment that needs attention. Let's handle two of them." },
-    { sel: "#list li", text: "INV-1042", t: "Tap INV-1042.", wait: () => on("INV-1042") },
+    { sel: "#list li", text: "INV-1042", t: "We're on INV-1042. Airwallex says the first payment failed with a bank timeout, and the supplier is waiting.", wait: () => on("INV-1042"), stay: true },
     { sel: "section.card.agent", t: "Tap \"Ask the AI\" and wait a few seconds.", wait: () => on("INV-1042") && answered() },
     { sel: "section.card.agent", t: "It says: safe to send it again - the first payment failed and never arrived." },
     { sel: "button.primary", text: "Approve replacement", t: "Tap \"Approve replacement\". That approval only works for this supplier and this amount, for 15 minutes.", wait: () => on("INV-1042") && /Approval #/.test(det()), done: cosigned },
-    { sel: "#switchop", t: "It's over the $200 two-person limit, so a second person must co-sign. Tap \"switch to Jordan\" at the top.", wait: () => /Jordan · switch/.test(document.querySelector("#switchop")?.textContent || ""), done: cosigned },
+    { sel: "#switchop", t: "It's over the $200 two-person limit, so a second person must co-sign. In real use Jordan signs in on his own computer; here, tap \"switch to Jordan\" at the top.", wait: () => /Jordan · switch/.test(document.querySelector("#switchop")?.textContent || ""), done: cosigned },
     { sel: "button.primary", text: "Co-sign", t: "You're Jordan now. Tap \"Co-sign\".", wait: cosigned },
     { sel: "#switchop", t: "Switch back to Zach.", wait: () => /Zach · switch/.test(document.querySelector("#switchop")?.textContent || ""), done: sent },
     { sel: "button.primary", text: "Send replacement", t: "Tap \"Send replacement\". The payment goes out (to a pretend Airwallex - nothing real moves).", wait: sent },
-    { sel: "p.hint", text: "used up", t: "Send is now greyed out: each approval works once, so the supplier can't be paid twice." },
+    { sel: "p.hint", text: "twice", t: "Send is now greyed out: each approval works once, so the supplier can't be paid twice." },
+    { sel: "section.card", text: "Payments on this incident", t: "Now Airwallex delivers it. In this demo the pretend bank confirms in a few seconds - just wait.", wait: () => on("INV-1042") && [...document.querySelectorAll("#detail div.pay")].some(d => /paid/i.test(d.textContent) && /Replacement/.test(d.textContent)) },
+    { sel: "section.card", text: "Payments on this incident", t: "Paid ✓. There's now a button to copy proof of payment for the supplier, and the receipt shows every step." },
     { sel: "#list li", text: "INV-1043", t: "Now a scam. Tap INV-1043.", wait: () => on("INV-1043") },
     { sel: "section.card.agent", t: "The supplier wants the money sent to a NEW bank account, so the code froze payments the moment that email arrived. Tap \"Ask the AI\".", wait: () => on("INV-1043") && answered() },
     { sel: "section.card.agent", t: "It says: get a person to check. And there's no way to pay this one, whatever the AI says." },
@@ -34,7 +36,8 @@
   #tour button.go{background:#ff7a45;color:#0f1419}
   .tour-hl{outline:4px solid #ff7a45!important;outline-offset:4px;border-radius:10px;animation:tourpulse 1.4s ease-in-out infinite}
   @keyframes tourpulse{50%{outline-color:rgba(255,122,69,.35)}}
-  body.touring{padding-bottom:55vh}`;
+  body.touring{padding-bottom:55vh}
+  @media (max-width:600px){#tourbtn{padding:8px 12px;font-size:13px;right:10px;bottom:10px;opacity:.92}}`;
   const st = document.createElement("style"); st.textContent = css; document.head.appendChild(st);
   let k = -1, box = null, tick = 0;
   const target = s => {
@@ -42,6 +45,7 @@
     const all = [...document.querySelectorAll(s.sel)].filter(e => e.offsetParent !== null);
     return s.text ? all.find(e => e.textContent.includes(s.text)) : all[0];
   };
+  const topPx = () => (innerWidth >= 900 ? Math.round((document.querySelector("header")?.getBoundingClientRect().bottom || 0) + 10) : 12) + "px";   // desktop: below the header, never over STOP
   const clearHl = () => document.querySelectorAll(".tour-hl").forEach(e => e.classList.remove("tour-hl"));
   const show = () => {
     clearHl(); clearInterval(tick);
@@ -49,11 +53,12 @@
     if (k < 0 || k >= STEPS.length) { box?.remove(); box = null; btn.hidden = false; return; }
     btn.hidden = true;
     const s = STEPS[k];
-    if ((s.done && s.done()) || (s.wait && s.wait() && k < STEPS.length - 1)) { k++; return show(); }   // already done: skip ahead
-    if (!box) { box = document.createElement("div"); box.id = "tour"; document.body.appendChild(box); }
-    box.innerHTML = `<div class="n">Step ${k + 1} of ${STEPS.length}</div><div>${typeof s.t === "function" ? s.t() : s.t}</div><div class="b"><button data-a="x">Close</button>${k ? '<button data-a="b">Back</button>' : ""}<button class="go" data-a="n">${k === STEPS.length - 1 ? "Done" : s.wait ? "Skip" : "Next"}</button></div>`;
+    if ((s.done && s.done()) || (!s.stay && s.wait && s.wait() && k < STEPS.length - 1)) { k++; return show(); }   // already done: skip ahead
+    if (!box) { box = document.createElement("div"); box.id = "tour"; document.body.appendChild(box); box.style.top = topPx(); }
+    box.innerHTML = `<div class="n">Step ${k + 1} of ${STEPS.length}</div><div>${typeof s.t === "function" ? s.t() : s.t}</div><div class="b"><button data-a="x">Close</button>${k ? '<button data-a="b">Back</button>' : ""}<button class="go" data-a="n">${k === STEPS.length - 1 ? "Done" : s.wait && !s.stay ? "Skip" : "Next"}</button></div>`;
     box.onclick = e => { const a = e.target.dataset.a; if (a === "x") { k = -1; show(); } if (a === "b") { k--; show(); }
-      if (a === "n") { const t = s.wait && target(s); const c = t && (t.matches("button") ? t : (t.querySelector("button.primary") || t.querySelector("button"))); if (c && !c.disabled) { c.click(); return; } k++; show(); } };   // Skip does the step for you
+      if (a === "n" && s.next) { box.querySelector('[data-a="n"]').disabled = true; Promise.resolve(s.next()).finally(() => setTimeout(() => { k++; show(); }, 600)); return; }
+      if (a === "n") { const t = s.wait && !s.stay && target(s); const c = t && (t.matches("button") ? t : (t.querySelector("button.primary") || t.querySelector("button"))); if (c && !c.disabled) { c.click(); return; } k++; show(); } };   // Skip does the step for you
     let scrolled = false;
     tick = setInterval(() => {
       const t = target(s); clearHl();
@@ -64,8 +69,8 @@
           const want = bh + (innerHeight - bh) * 0.45; if (!c.closest("header")) window.scrollBy({ top: r.top + r.height / 2 - want, behavior: "smooth" }); else if (r.top < 0 || r.bottom > innerHeight) window.scrollTo({ top: 0, behavior: "smooth" }); scrolled = true; }
         const cr = c.getBoundingClientRect(), br = box.getBoundingClientRect();         // never sit on top of the thing to tap
         const hit = !(cr.right < br.left || cr.left > br.right || cr.bottom < br.top || cr.top > br.bottom);
-        if (hit) { if (box.style.bottom) { box.style.bottom = ""; box.style.top = "12px"; } else { box.style.top = "auto"; box.style.bottom = "12px"; } } }
-      if ((s.wait && s.wait()) || (s.done && s.done())) { k++; setTimeout(show, 700); clearInterval(tick); }
+        if (hit) { if (box.style.bottom) { box.style.bottom = ""; box.style.top = topPx(); } else { box.style.top = "auto"; box.style.bottom = "12px"; } } }
+      if ((!s.stay && s.wait && s.wait()) || (s.done && s.done())) { k++; setTimeout(show, 700); clearInterval(tick); }
     }, 400);
   };
   const btn = document.createElement("button"); btn.id = "tourbtn"; btn.textContent = "▶ Take the short guided tour";
