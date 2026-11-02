@@ -48,6 +48,15 @@ async function load(quiet) {
     pend.append(li);
   }
   pend.hidden = !pend.children.length;
+  const wd = $("#wdbar"), ws = S.watchdog || {}; wd.replaceChildren();
+  if (ws.state === "awaiting_approval") {
+    const names = (ws.fixed || []).map(f => f[0].replace(/_/g, " ").toLowerCase()).join(", ");
+    wd.append(el("b", null, "Self-test found a problem and paused payments. "), el("span", null, `It wrote a fix (${names}) that passed all 6 checks. A person decides when it goes live: `));
+    const ok = el("button", "primary", "Apply fix and resume"); ok.onclick = () => act("/api/watchdog/apply", {}, "Fix applied - the desk restarts on the new code");
+    const no = el("button", null, "Reject fix"); no.onclick = () => act("/api/watchdog/reject", {}, "Fix rejected and undone - payments stay stopped");
+    wd.append(ok, no);
+  } else if (ws.state === "repaired" && ws.applied_by) wd.append(el("span", null, `Self-test: last fix applied by ${ws.applied_by}. All checks green.`));
+  wd.hidden = !wd.children.length;
   const k = $("#kill"); k.textContent = p.killed ? "STOPPED - tap to resume" : "STOP all payments"; k.dataset.on = p.killed ? "1" : "";
   const list = $("#list"); list.replaceChildren();
   for (const i of S.incidents) {
@@ -69,7 +78,7 @@ function whatHappened(i) {
   if (i.alert) return `A safety alarm is on (${i.alert.replace(/_/g, " ").toLowerCase()}). Payments here are frozen until a person checks.`;
   if (!last) return "Nothing has been sent yet. A person needs to approve the payment first.";
   const why = last.failure_message ? ` (bank said: "${last.failure_message}")` : "";
-  return `The last payment of ${money(last.amount, last.currency)} is ${PLAIN_STATUS[last.status] || last.status.toLowerCase()}${last.status === "CANCELLED" ? why + ". Nothing was paid" : ""}.`;
+  return last.status === "CANCELLED" ? `The last payment of ${money(last.amount, last.currency)} failed${why}. Nothing was paid.` : `The last payment of ${money(last.amount, last.currency)} is ${PLAIN_STATUS[last.status] || last.status.toLowerCase()}.`;
 }
 
 function render() {
@@ -88,6 +97,7 @@ function render() {
   sum.append(el("h3", null, "What happened"), el("p", "plain", whatHappened(i)));
   const said = (i.events || []).filter(e => e.kind === "supplier_message").slice(0, 2);
   if (said.length) { sum.append(el("h3", null, "What the supplier said")); for (const e of said) sum.append(el("blockquote", "said", `"${e.body.text}"`)); }
+  if (i.alert === "FRAUD_SIGNAL") sum.append(el("p", "callback", "Before paying anyone: call the supplier on a phone number you already have - never one from the email."));
   const steps = el("ol", "steps");
   for (const [n, t] of [["1", "Read what happened"], ["2", "Ask the AI what to do"], ["3", "Approve and send - or get a person to check"]]) steps.append(el("li", null, t));
   sum.append(steps); d.append(sum);
@@ -95,7 +105,7 @@ function render() {
   // Agent card
   const ag = el("section", "card agent");
   const top = el("div", "agtop"); top.append(el("h3", null, "The AI's advice"));
-  const aiTag = { ready: ["ai-ready", "AI answer ready ✓"], thinking: ["ai-think", "AI is reading the evidence…"], idle: ["ai-think", "AI queued…"] }[i.ai];
+  const aiTag = { ready: ["ai-ready", "AI answer ready ✓"], thinking: ["ai-think", "AI is reading the evidence…"], }[i.ai];
   if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
   const ask = el("button", "primary", "Ask the AI");
   ask.onclick = async () => { ask.disabled = true; ask.textContent = "Agent thinking…";
@@ -103,8 +113,9 @@ function render() {
   top.append(ask);
   ag.append(top);
   if (i.decision) {
-    ag.append(el("div", "decision d-" + i.decision.decision, i.decision.decision), el("div", "plaindec", PLAIN_DECISION[i.decision.decision] || ""));
-    const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(Second opinion/.test(r) ? "adv" : null, r)); ag.append(ul);
+    ag.append(el("div", "decision adv d-" + i.decision.decision, i.decision.decision), el("div", "plaindec d-" + i.decision.decision, PLAIN_DECISION[i.decision.decision] || ""));
+    ag.append(el("p", "answered", "Answered by: " + (i.decision.answered_by || (i.decision.provenance === "model" ? "the AI" : "the rulebook (plain code, no AI)"))));
+    const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
     ag.append(el("p", "hint adv", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else ag.append(el("p", "hint", "The agent can only pick from: " + i.allowed.join(", ") + ". It cannot pay, approve or change who gets paid."));
   d.append(ag);
@@ -151,13 +162,13 @@ function render() {
   const ops = el("div", "btns");
   const role = i.payments.length ? "replacement" : "original";
   const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
-  const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN";
-  const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - status ${r.status}`); pay.disabled = !unused;
+  const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
+  const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - status ${r.status}`); pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
   const note = el("input", "note"); note.placeholder = i.alert ? "Resolution note (required: what you checked)" : "Optional note"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
-  const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); const r = await api(`/api/incidents/${i.id}/receipt`); const a = el("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: "application/json" })); a.download = `receipt-${i.invoice}.json`; a.click(); };
+  const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); try { const r = await api(`/api/incidents/${i.id}/receipt`); const a = el("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: "application/json" })); a.download = `receipt-${i.invoice}.json`; a.click(); } catch (err) { toast(err.message, true); } };
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
-  reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
+  reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, r => r && r.pending ? "Reopen request saved - a second person must confirm it" : "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
   if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";
   ops.append(ap, pay, note, reopen, close, rc); op.append(ops);
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
@@ -166,7 +177,7 @@ function render() {
       op.append(cb);
     } else op.append(el("p", "hint", `Over ${usd(S.policy.dual_approval_over)} (or over it for this payee today): someone other than ${S.me} must open this desk with their own sign-in and co-sign.`));
   }
-  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${money(unused.amount, i.currency)}, ${i.currency}, expires ${when(unused.expires_at)}.` : "Every payment needs its own approval. An approval works once."));
+  op.append(el("p", "hint", unused ? `Approval #${unused.id} by ${unused.approved_by}${unused.cosigned_by ? " + " + unused.cosigned_by : ""} - binds this supplier, ${money(unused.amount, i.currency)}, ${i.currency}, expires ${when(unused.expires_at)}.` : (i.payments.length && !["CANCELLED"].includes(i.payments[i.payments.length - 1].status) ? "Sent ✓ - that approval is used up, so this payment can't be sent twice." : "Every payment needs its own approval. An approval works once.")));
   d.append(op);
 
   // Try to break it

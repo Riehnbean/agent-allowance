@@ -120,6 +120,11 @@ class Airwallex:
     def get_beneficiary(self, beneficiary_id):
         return self._raw("GET", "/beneficiaries/" + beneficiary_id)
 
+    def verify_account(self, entity_type, bank_details):
+        """Ask Airwallex whether the account exists and the name matches (Verification/Confirmation of Payee;
+        SEPA, UK, VN). Returns {code: VERIFIED|INVALID|CANNOT_VERIFY|..., details: {account_name_match_result}}."""
+        return self._raw("POST", "/beneficiaries/verify_account", {"transfer_method": "LOCAL", "entity_type": entity_type, "bank_details": bank_details})
+
     def update_beneficiary(self, beneficiary_id, payload):
         return self._raw("POST", f"/beneficiaries/{beneficiary_id}/update", payload)
 

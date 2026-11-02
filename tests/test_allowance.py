@@ -225,7 +225,7 @@ class Approvals(Base):
         iid = self.incident()
         ap = self.svc.approve(iid, "original", "zach")
         self.svc.kill("zach")
-        with self.assertRaisesRegex(Refused, "kill"):
+        with self.assertRaisesRegex(Refused, "STOP is on"):
             self.svc.pay(ap, "original", BEN, 25_000, "USD")
         self.assertEqual(self.fake.calls, 0)
 

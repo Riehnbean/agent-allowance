@@ -7,7 +7,7 @@ try { sessionStorage.setItem("op-token", sessionStorage.getItem("op-token") || "
 const SHIM = `
 import os, sys, json, threading
 os.environ.update(DEMO="1", OPERATOR_TOKENS="zach:zach,jordan:jordan", ALLOWANCE_DB="/tmp/demo.db",
-                  WATCHDOG_EVERY="0", AGENT_PROVIDER="pollinations", THINK_AHEAD="0")
+                  WATCHDOG_EVERY="0", AGENT_PROVIDER="pollinations", THINK_AHEAD="0", DEMO_COSIGN_OVER="20000")
 sys.path.insert(0, "/app")
 sys.argv = ["demo.py"]
 
@@ -22,11 +22,14 @@ threading.Thread = _SyncThread
 
 from js import XMLHttpRequest
 import allowance.agent as AG
+import time as _time
 def _post(self, url, body, headers):       # same request, sent by the browser
+    t0 = _time.time()
     x = XMLHttpRequest.new(); x.open("POST", url, False)
     x.setRequestHeader("content-type", "application/json")
     for k, v in headers.items(): x.setRequestHeader(k, v)
     x.send(json.dumps(body))
+    if _time.time() - t0 > 8: os.environ["AGENT_PROVIDER"] = ","   # too slow for a browser tab: rulebook from now on
     if x.status != 200: raise RuntimeError(f"AI HTTP {x.status}")
     return json.loads(x.responseText)
 AG.Brain._post = _post
@@ -48,6 +51,7 @@ def route(method, path, token, body):
     except server.ProviderError as e: return (502, json.dumps({"provider": e.code, "message": e.message}))
     except server.Ambiguous as e: return (504, json.dumps({"ambiguous": str(e)}))
     except (KeyError, ValueError, TypeError) as e: return (400, json.dumps({"error": f"bad request: {e}"}))
+    except Exception as e: return (500, json.dumps({"error": f"internal error ({type(e).__name__})"}))
 `;
 
 const setStatus = t => { const e = document.getElementById("bootmsg"); if (e) e.textContent = t; };
@@ -65,6 +69,13 @@ window.__pyReady = (async () => {
   }
   setStatus("Setting up four example payments…");
   py.runPython(SHIM);
+  // The free AI is called synchronously from Python, so only use it if it answers quickly right now.
+  try {
+    const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), 6000);
+    const r = await _fetch("https://text.pollinations.ai/openai", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "openai-fast", messages: [{ role: "user", content: "Reply OK" }] }), signal: ac.signal });
+    clearTimeout(tm); if (!r.ok) throw new Error("AI " + r.status);
+  } catch { py.runPython('import os; os.environ["AGENT_PROVIDER"] = ","'); window.__aiOff = true; }
   const boot = document.getElementById("boot"); if (boot) { boot.style.opacity = 0; setTimeout(() => boot.remove(), 400); }
   return py;
 })().catch(e => { setStatus("Sorry - the demo could not start in this browser: " + e.message); throw e; });

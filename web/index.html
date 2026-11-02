@@ -10,8 +10,9 @@
   <button id="advtoggle" class="advbtn">Advanced (testers)</button>
   <button id="kill" class="kill">STOP all payments</button>
 </header>
-<div id="resume" class="resume" hidden><form id="resumeform" class="row"><input id="resumenote" placeholder="Why is it safe to resume? (kept in the log)"><button class="primary">Resume payments</button></form></div>
+<div id="resume" class="resume" hidden><form id="resumeform" class="row"><input id="resumenote" placeholder="Why is it safe to resume? (kept in the log)" required><button class="primary">Resume payments</button></form></div>
 <div id="pending" class="pendingbar" hidden></div>
+<div id="wdbar" class="wdbar" hidden></div>
 <div id="gate" class="gate" hidden>
   <form id="gateform"><h2>Operator sign-in</h2><p>Enter the operator token this desk was started with. The AI agent never has it.</p>
   <input id="tok" type="password" autocomplete="current-password" placeholder="Operator token"><button>Open desk</button></form>
@@ -21,14 +22,14 @@
     <section class="card adv">
       <h3>New supplier payment</h3>
       <form id="newinc" class="row">
-        <label>Invoice <input name="invoice" placeholder="INV-1042"></label>
+        <label>Invoice <input name="invoice" placeholder="INV-1042" required></label>
         <label>Amount (USD) <input name="amount" value="250.00" inputmode="decimal"></label>
         <label class="chk"><input type="checkbox" name="separate_invoice"> separate invoice (same amount OK)</label>
         <button>Open incident</button>
       </form>
       <p class="hint">Pays the one supplier on the allowlist: <b id="benname">—</b></p>
     </section>
-    <section class="card"><h3>Incidents</h3><ol id="list" class="list"></ol></section>
+    <section class="card"><h3>Payments that need attention</h3><ol id="list" class="list"></ol></section>
     <section class="card legend adv"><h3>How to read the log</h3>
       <p><i class="pv observed"></i>Observed - read back from Airwallex</p>
       <p><i class="pv decided"></i>Decided - enforced by code</p>

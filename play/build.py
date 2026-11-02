@@ -28,7 +28,7 @@ boot = ('<div id="boot" style="position:fixed;inset:0;z-index:99999;background:#
         '<div style="font-size:30px;font-weight:800;color:#ff7a45">Agent Allowance</div>'
         '<div id="bootmsg">Starting the demo…</div>'
         '<div style="color:#9aa5b1;font-size:14px;max-width:520px">The real app code runs right here in your browser - no install, no account. '
-        'Airwallex is simulated, so nothing real can be paid.</div></div>')
+        'Airwallex is simulated, so nothing real can be paid. Everything resets when you reload.</div></div>')
 html = html.replace("<body>", "<body>\n" + boot, 1)
 html = re.sub(r'<span class="env" id="env">[^<]*</span>', '<span class="env" id="env">Browser demo · simulated Airwallex · fake money</span>', html)
 open(os.path.join(OUT, "index.html"), "w", encoding="utf-8").write(html)

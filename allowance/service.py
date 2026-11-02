@@ -60,6 +60,7 @@ class Service:
         if details is None:
             details = self.p.get_beneficiary(provider_id)
         h, ak = details_hash(details), account_key(details)
+        self._verify_payee(provider_id, name, details)
         with self.s.tx():
             old = self.s.one("SELECT details_hash, details_changed_at FROM beneficiaries WHERE id=?", provider_id)
             changed_at = (self.now() if old and old["details_hash"] and old["details_hash"] != h else (old["details_changed_at"] if old else None))
@@ -73,6 +74,27 @@ class Service:
             )
             self.s.log("operator", "beneficiary_allowed", "operator", None, id=provider_id, name=name, fingerprint=fingerprint,
                        by=operator, details_hash=h[:12], override=override_reason)
+
+    VERIFY_COUNTRIES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+                        "PL", "PT", "RO", "SK", "SI", "ES", "SE", "IS", "LI", "NO", "CH", "GB", "VN"}
+
+    def _verify_payee(self, provider_id, name, details):
+        """Before a payee goes on the allowlist, ask Airwallex if the account is real (Verify Account). An INVALID
+        account is refused; a name that doesn't match is kept on the record so a person checks with the supplier."""
+        b = (details or {}).get("beneficiary") or {}
+        bank = b.get("bank_details") or {}
+        if bank.get("bank_country_code") not in self.VERIFY_COUNTRIES or not hasattr(self.p, "verify_account"):
+            return None
+        try:
+            r = self.p.verify_account(b.get("entity_type", "COMPANY"), bank)
+        except Exception as e:  # verification is extra evidence; Airwallex being unavailable never blocks on its own
+            self.s.log("provider", "payee_verification_unavailable", "observed", None, id=provider_id, error=str(e)[:200])
+            return None
+        match = (r.get("details") or {}).get("account_name_match_result")
+        self.s.log("provider", "payee_verified", "observed", None, id=provider_id, name=name, code=r.get("code"), name_match=match)
+        if r.get("code") == "INVALID":
+            raise Refused("Airwallex says this bank account is not valid - not added")
+        return r
 
     def open_incident(self, supplier, invoice, beneficiary_id, amount, currency, deadline=None, allow_similar=False):
         invoice = clean_ref(invoice)
@@ -107,7 +129,7 @@ class Service:
             self.s.log("system", "incident_opened", "decided", iid, supplier=supplier, invoice=invoice, amount=amount, currency=currency)
         return iid
 
-    def approve(self, incident_id, role, operator, ttl=3600, beneficiary_id=None, amount=None, currency=None):
+    def approve(self, incident_id, role, operator, ttl=900, beneficiary_id=None, amount=None, currency=None):
         inc = self._incident(incident_id)
         b, a, c = beneficiary_id or inc["beneficiary_id"], amount or inc["amount"], currency or inc["currency"]
         if role == "replacement":
@@ -117,8 +139,8 @@ class Service:
         if (b, a, c) != (inc["beneficiary_id"], inc["amount"], inc["currency"]):
             self.s.log("policy", "approval_refused", "decided", incident_id, reason="approval terms differ from the invoice")
             raise Refused("an approval must match the invoice exactly (payee, amount, currency)")
-        if ttl > 24 * 3600:
-            raise Refused("approvals expire within 24 hours")
+        if not isinstance(ttl, int) or not 0 < ttl <= 900:
+            raise Refused("an approval lasts at most 15 minutes")
         with self.s.tx():
             ph = self.s.one("SELECT details_hash FROM beneficiaries WHERE id=?", b)
             cur = self.s.db.execute(
@@ -284,6 +306,8 @@ class Service:
             raise Refused("the exchange-rate quote does not match this invoice (currency pair or amount) - nothing sent")
         if abs(cost - round(amount * rate)) > 2:
             raise Refused("the quote's price and rate disagree - nothing sent")
+        if mid <= 0:
+            raise Refused("the exchange-rate quote has no mid-market rate, so its markup can't be checked - nothing sent")
         spread = (rate / mid - 1) * 10000 if mid > 0 else None
         if spread is not None and spread > pol["max_fx_spread_bps"]:
             raise Refused(f"exchange-rate markup {spread:.0f} bps is over the {pol['max_fx_spread_bps']} bps limit - nothing sent")
@@ -404,7 +428,7 @@ class Service:
             bal = self.p.usd_balance_minor()
         except (Ambiguous, ProviderError):
             bal = None
-        if bal is not None and bal < pay["amount"] + self.s.policy()["max_fee"]:
+        if bal is not None and bal < (pay["cost_amount"] or pay["amount"]) + self.s.policy()["max_fee"]:
             block("INSUFFICIENT_BALANCE_PRECHECK", f"wallet balance {bal/100:.2f} would not cover this payment plus fees")
 
     def reconcile(self, request_id, strict=False):
@@ -555,9 +579,12 @@ class Service:
 
     def supplier_message(self, incident_id, text):
         from .agent import fraud_signals
+        if not isinstance(text, str):
+            raise Refused("a supplier message must be text")
+        scam = fraud_signals([text])           # decided before anything is written, so a crash can't leave a silent message
         with self.s.lock:  # message + alarm land together; a decision can't be recorded in between
             self.s.log("supplier", "supplier_message", "untrusted", incident_id, text=text[:2000])
-            if fraud_signals([text]):
+            if scam:
                 # Sticky: later "any update?" messages can't push it out of view.
                 self._alert(incident_id, "FRAUD_SIGNAL")
 
@@ -656,7 +683,7 @@ class Service:
         face = amount
         amount = cost if cost is not None else amount  # every cap below is in the home currency
         if pol["killed"]:
-            raise Refused("kill switch is on")
+            raise Refused("STOP is on - no payment can be sent")
         if inc["state"] != "OPEN":
             raise Refused(f"incident is {inc['state']}")
         if ap["used_by_request"]:
@@ -687,7 +714,7 @@ class Service:
         if amount > pol["dual_approval_over"] and not cosigned:
             raise Refused(f"payments over {pol['dual_approval_over']/100:.2f} need a second person to co-sign the approval")
         if day_to_payee + amount > pol["dual_approval_over"] and not cosigned:
-            raise Refused(f"this payee would receive {(day_to_payee + amount)/100:.2f} in 24h - splitting payments under the co-sign limit still needs a co-signer")
+            raise Refused(f"this supplier was already sent {day_to_payee/100:.2f} in the last 24 hours; with this payment that is {(day_to_payee + amount)/100:.2f}, over the {pol['dual_approval_over']/100:.2f} two-person limit - a second person must co-sign (splitting payments under the co-sign limit still needs a co-signer)")
         if self.s.committed_today(self.now()) + amount + pol["max_fee"] > pol["daily_cap"]:
             raise Refused("would exceed today's cap (reserved and uncertain payments count)")
         if self.s.committed_today_for(beneficiary_id, self.now()) + amount > pol["per_supplier_daily_cap"]:
@@ -756,11 +783,17 @@ class Service:
         # Map the provider's failure *reason* to our retry classes via the message when needed.
         ftype = _classify_failure(fail.get("message"), ftype) if status == "CANCELLED" else None
         prev = self.payment(request_id)
-        fee = None
-        if t.get("fee_amount") is not None and t.get("fee_paid_by", "PAYER") == "PAYER":
-            fee = str_to_minor(t["fee_amount"])
-        payer_pays = str_to_minor(t["amount_payer_pays"]) if t.get("amount_payer_pays") is not None else None
+        fee = payer_pays = None
+        bad_money = False
+        try:
+            if t.get("fee_amount") is not None and t.get("fee_paid_by", "PAYER") == "PAYER":
+                fee = str_to_minor(t["fee_amount"])
+            payer_pays = str_to_minor(t["amount_payer_pays"]) if t.get("amount_payer_pays") is not None else None
+        except Exception:
+            bad_money = True                   # the status still gets recorded; the odd amount becomes an alarm
         self._set(request_id, status, source, provider_id=t.get("id"), failure_type=ftype, failure_message=fail.get("message"), fee=fee)
+        if bad_money:
+            self._anomaly(request_id, "PROVIDER_MISMATCH", "Airwallex returned a fee or charged amount we could not read")
         cost = prev["cost_amount"] or prev["amount"]
         if (fee or 0) > self.s.policy()["max_fee"] or (payer_pays and payer_pays > cost + self.s.policy()["max_fee"]):
             self._anomaly(request_id, "FEE_OVER_LIMIT", f"Airwallex charges {((payer_pays or cost + (fee or 0)))/100:.2f} for a payment budgeted at {cost/100:.2f}")
@@ -814,9 +847,9 @@ class Service:
                         self._anomaly(request_id, "DOUBLE_PAID", "two transfers on this incident are PAID - ask the supplier to refund one")
 
     def _anomaly(self, request_id, code, detail):
-        row = self.s.one("SELECT incident_id, anomaly FROM payments WHERE request_id=?", request_id)
-        if row["anomaly"] == code:
-            return  # already raised for this payment; don't re-alarm on every re-read
+        row = self.s.one("SELECT p.incident_id, p.anomaly, i.alert FROM payments p JOIN incidents i ON i.id=p.incident_id WHERE p.request_id=?", request_id)
+        if row["anomaly"] == code and row["alert"] == code:
+            return  # already raised and still showing; don't re-alarm on every re-read (but do after someone cleared it)
         with self.s.tx():
             self.s.db.execute("UPDATE payments SET anomaly=? WHERE request_id=?", (code, request_id))
         self.s.log("provider", "anomaly", "observed", row["incident_id"], request_id=request_id, code=code, detail=detail)

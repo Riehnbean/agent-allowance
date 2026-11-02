@@ -8,6 +8,7 @@ that moves money - it can only be asked for a proposal.
 """
 import hmac
 import json
+import subprocess
 import threading
 import os
 import re
@@ -104,13 +105,37 @@ def state():
     pol["log"] = {"intact": ok, "entries": n, "first_bad": bad}
     return {"me": None, "operators": sorted(set(OPERATORS.values())),
             "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
-            "policy": pol, "beneficiaries": [dict(b) for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
+            "policy": pol, "beneficiaries": [{k: v for k, v in dict(b).items() if k not in ("account_key", "details_hash")} for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": AGENT.nice, "drop_armed": PROV.armed,
-            "failure_types": ALL_FAILURE_TYPES, "env": ("OFFLINE DEMO - simulated Airwallex, no network" if DEMO else "Airwallex SANDBOX - fake money only"), "watchdog": watchdog_status()}
+            "failure_types": ALL_FAILURE_TYPES, "env": ("Practice copy - Airwallex simulated, no real money" if DEMO else "Airwallex SANDBOX - fake money only"), "watchdog": watchdog_status()}
+
+
+WATCHDOG_APPLY = os.environ.get("WATCHDOG_APPLY", "approve")  # "approve": a person taps Apply before a Watchdog fix goes live; "auto": fully hands-off
+
+
+def _wd_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog")
+
+
+def _wd_set_state(state, **extra):
+    p = os.path.join(_wd_dir(), "status.json")
+    try:
+        st = json.load(open(p))
+    except Exception:
+        st = {}
+    st.update(extra, state=state)
+    json.dump(st, open(p, "w"), indent=1)
+    return st
+
+
+def _restart_on_new_code():
+    while SVC.s.one("SELECT 1 FROM payments WHERE status='RESERVED'"):  # a payment mid-send finishes first
+        time.sleep(5)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def watchdog_status():
-    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchdog")
+    d = _wd_dir()
     try:
         st = json.load(open(os.path.join(d, "status.json")))
     except Exception:
@@ -163,7 +188,15 @@ def unused_approval(iid, role):
     return a["id"]
 
 
+TEXT_FIELDS = ("note", "reason", "text", "role", "request_id", "status", "failure_type", "invoice", "amount")
+
+
 def handle(method, path, body, op="operator"):
+    if not isinstance(body, dict):
+        raise ValueError("the request body must be a JSON object")
+    for k in TEXT_FIELDS:
+        if k in body and body[k] is not None and not isinstance(body[k], (str, int, float)) or isinstance(body.get(k), bool):
+            raise ValueError(f"{k} must be text")
     p = path.strip("/").split("/")
     if method == "GET" and path == "/api/state":
         return state()
@@ -173,8 +206,27 @@ def handle(method, path, body, op="operator"):
         raise Refused("not found")
     if path == "/api/setup":
         return {"beneficiary": ensure_beneficiary(op)}
+    if path == "/api/watchdog/apply":
+        st = watchdog_status()
+        if st.get("state") != "awaiting_approval":
+            raise Refused("no Watchdog fix is waiting for approval")
+        SVC.s.log("operator", "watchdog_fix_applied", "operator", None, by=op, fixes=st.get("fixed"))
+        _wd_set_state("repaired", applied_by=op)       # on restart the desk lifts the Watchdog's own STOP
+        threading.Timer(1.0, _restart_on_new_code).start()
+        return {"applied": [f[2] for f in st.get("fixed", [])], "restarting": True}
+    if path == "/api/watchdog/reject":
+        st = watchdog_status()
+        if st.get("state") != "awaiting_approval":
+            raise Refused("no Watchdog fix is waiting for approval")
+        shas = [f[2] for f in st.get("fixed", [])]
+        for sha in reversed(shas):
+            subprocess.run(["git", "-c", "user.name=" + op, "-c", "user.email=operator@agent-allowance.local", "revert", "--no-edit", sha],
+                           cwd=os.path.dirname(os.path.abspath(__file__)), capture_output=True)
+        SVC.s.log("operator", "watchdog_fix_rejected", "operator", None, by=op, reverted=shas)
+        _wd_set_state("rejected", rejected_by=op)      # payments stay stopped until a person resumes them
+        return {"reverted": shas}
     if path == "/api/kill":
-        SVC.kill(op, body.get("reason") or f"{op} pressed STOP")
+        SVC.kill(op, str(body.get("reason") or f"{op} pressed STOP")[:200])
         return {}
     if path == "/api/unkill":
         pol = SVC.s.policy()
@@ -257,7 +309,8 @@ def handle(method, path, body, op="operator"):
             SVC.supplier_message(iid, body.get("text", ""))
             return {}
         if act == "reopen":
-            serious = inc["alert"] in ("DOUBLE_PAID", "BENEFICIARY_CHANGED", "CANCELLED_THEN_PAID", "PAID_THEN_CANCELLED", "FRAUD_SIGNAL")
+            from allowance.service import ALERT_RANK
+            serious = bool(inc["alert"]) and (ALERT_RANK.get(inc["alert"], 0) >= 80 or inc["alert"] == "FRAUD_SIGNAL")
             last = SVC.s.one("SELECT failure_type FROM payments WHERE incident_id=? ORDER BY created_at DESC LIMIT 1", iid)
             from allowance.service import DETAILS_PROBLEM, DELIBERATE
             if (serious or (last and last["failure_type"] in DETAILS_PROBLEM | DELIBERATE)) and len(OPERATORS) > 1:
@@ -355,6 +408,9 @@ class H(BaseHTTPRequestHandler):
             self._send(504, {"ambiguous": str(e)})
         except (KeyError, ValueError, TypeError) as e:
             self._send(400, {"error": f"bad request: {e}"})
+        except Exception as e:  # never drop the connection: say what went wrong
+            print("request error:", type(e).__name__, e, flush=True)
+            self._send(500, {"error": f"internal error ({type(e).__name__})"})
 
     def do_GET(self):
         self._route("GET")
@@ -378,7 +434,8 @@ def sweeper():
 
 
 def watchdog_thread():
-    """Hourly by default: hunt -> automatic repair behind gates -> restart on the new code. No human step."""
+    """Hourly by default: hunt -> automatic repair behind gates. WATCHDOG_APPLY=approve (default): payments stay
+    paused until a person taps Apply; WATCHDOG_APPLY=auto: restart on the new code with no human step."""
     import threading
     every = float(os.environ.get("WATCHDOG_EVERY", "3600"))
     if every <= 0:
@@ -390,12 +447,15 @@ def watchdog_thread():
             time.sleep(every)
             try:
                 st = cycle(float(os.environ.get("WATCHDOG_MINUTES", "3")), desk=SVC)
-                if st["fixed"]:
-                    # new code was committed: restart once nothing is mid-send (a reserved payment finishes first)
-                    while SVC.s.one("SELECT 1 FROM payments WHERE status='RESERVED'"):
-                        time.sleep(5)
+                if st["fixed"] and WATCHDOG_APPLY != "auto":
+                    # default: the fix is written and tested, payments stay paused, a person taps Apply to put it live
+                    SVC.kill("watchdog", "Watchdog fix is ready - waiting for a person to apply it")
+                    _wd_set_state("awaiting_approval")
+                    SVC.s.log("system", "watchdog_fix_ready", "decided", None, fixes=st["fixed"])
+                    print("watchdog: fix ready, waiting for a person to apply it", flush=True)
+                elif st["fixed"]:
                     print("watchdog: fix committed, restarting desk on the new code", flush=True)
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                    _restart_on_new_code()
             except Exception as e:  # the Watchdog must never take the desk down
                 print("watchdog error:", e, flush=True)
     threading.Thread(target=loop, daemon=True).start()

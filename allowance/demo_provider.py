@@ -29,6 +29,10 @@ class DemoAirwallex:
             raise ProviderError(404, "not_found", "beneficiary not found")
         return {k: (dict(v) if isinstance(v, dict) else v) for k, v in self.bens[bid].items()}
 
+    def verify_account(self, entity_type, bank_details):
+        return {"code": "VERIFIED", "details": {"account_name_match_result": "FULL_MATCH", "resolved_account_name": bank_details.get("account_name")},
+                "message": "demo stand-in"}
+
     def update_beneficiary(self, bid, payload):
         with self.lock:
             self.bens[bid].update({k: v for k, v in payload.items() if v is not None})

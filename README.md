@@ -8,6 +8,13 @@ Prefer a full dev environment? [![Open in GitHub Codespaces](https://github.com/
 
 
 **Airwallex Agentic Banking Hackathon · Treasury & Ops · Starter Kit 03 (Payment Ops Incident Commander)**
+
+**Why it matters.** Business email compromise - fake "our bank changed" and "we were never paid" emails - cost US businesses **$3.05 billion in 2025** ([FBI IC3 2025 report](https://www.mcdonaldhopkins.com/insights/news/the-sobering-truth-of-the-fbis-2025-internet-crime-complaint-center-report)), and **63%** of organizations were hit by attempted or actual BEC fraud, with vendor-impersonation fraud up to 45% ([AFP 2025 Payments Fraud Survey](https://www.financialprofessionals.org/about/learn-more/press-releases/Details/survey-79-percent-of-organizations-were-victims-of-attempted-or-actual-payments-fraud-activity-in-2024)).
+
+**Who it's for.** Accounts-payable teams at growing companies (roughly 20-500 people) that pay suppliers through Airwallex, often across currencies, without a fraud team.
+
+**How it differs.** Ramp, Bill.com and agent spend-limit tools cap *how much* can be spent. None of them decide what to do when a payment goes wrong: whether a failed transfer is safe to re-send, whether a "we never got paid" email is a scam, or whether only part of the money arrived. Agent Allowance handles that moment - and the AI can never move money itself.
+
 Team: Zach's Team (Zach Riehn). Built by AI coding agents (Claude) under Zach's direction during the Build Phase.
 
 A supplier says they were never paid. The transfer might still land, might have bounced, or the "supplier"
@@ -39,9 +46,9 @@ python3 demo.py
 Open http://127.0.0.1:8710 and sign in with token `zach` (a second browser as `jordan` to try co-signing). Four seeded incidents: a failed transfer to replace, a scam "new bank details" email the desk escalates, a "we only received $280" reply that needs judgment, and a EUR invoice paid through a locked FX quote. Set `ANTHROPIC_API_KEY` to have Claude answer, or `AGENT_PROVIDER=pollinations` for the free open-source model; otherwise the rulebook does.
 
 ## Airwallex APIs used (sandbox only)
-`POST /authentication/login` · `POST /beneficiaries/create` · `POST /transfers/create` · `GET /transfers/{id}` ·
-`GET /transfers?request_id=` · `POST /simulation/transfers/{id}/transition` · `GET /balances/current` ·
-`POST /simulation/deposit/create` (funding). The adapter refuses any base URL other than `api.sandbox.airwallex.com`.
+`POST /authentication/login` · `POST /beneficiaries/create` · `GET /beneficiaries/{id}` · `POST /beneficiaries/verify_account` (account check before a SEPA/UK payee is allowed) ·
+`POST /fx/quotes/create` (locked rate) · `POST /transfers/create` (with `quote_id`) · `GET /transfers/{id}` · `GET /transfers?request_id=` · `GET /transfers?from_created_at=` ·
+`GET /balances/current` · `POST /simulation/transfers/{id}/transition` · `POST /simulation/deposit/create` (funding) · webhooks (only ever trigger a fresh read). The adapter refuses any base URL other than `api.sandbox.airwallex.com`.
 
 Sandbox notes we verified by probing: a failed transfer ends `CANCELLED`; the reason is in `failure.message`
 (e.g. "Channel timeout"); `failure.details.type` is always `INCORRECT_ROUTING` in sandbox, so we classify by message and
@@ -69,7 +76,7 @@ export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (n
 # a click never waits more than AGENT_CLICK_BUDGET (default 6s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
-python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review tests.test_nov1_review tests.test_nov1_verify tests.test_indep tests.test_r3_provider tests.test_r3_normalizer tests.test_r3_concurrency tests.test_watchdog tests.test_fx  # 161 test runs, no network
+python3 -m unittest tests.test_allowance tests.test_break tests.test_break_server tests.test_codex_review tests.test_nov1_review tests.test_nov1_verify tests.test_indep tests.test_r3_provider tests.test_r3_normalizer tests.test_r3_concurrency tests.test_watchdog tests.test_fx tests.test_wd_approve tests.test_verify_payee tests.test_r4_review  # 177 test runs, no network
 python3 -m watchdog.cycle --minutes 3   # Watchdog: attack, auto-repair behind gates (needs ANTHROPIC_API_KEY to repair), report
 python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
 AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)
