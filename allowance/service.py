@@ -146,6 +146,8 @@ class Service:
                     if p["status_source"] != "none"]   # rows blocked here before sending never reached Airwallex
             if not pays or any(in_flight(p["status"]) for p in pays) or pays[-1]["status"] != "CANCELLED" or pays[-1]["status_source"] != "provider_get":
                 raise Refused("a replacement can only be approved after Airwallex confirms the previous payment failed")
+        if role == "original" and self.s.one("SELECT 1 FROM payments WHERE incident_id=? AND status_source<>'none'", incident_id):
+            raise Refused("an original payment already went out for this invoice - only a replacement can be approved, and only after it failed")
         if (b, a, c) != (inc["beneficiary_id"], inc["amount"], inc["currency"]):
             self.s.log("policy", "approval_refused", "decided", incident_id, reason="approval terms differ from the invoice")
             raise Refused("an approval must match the invoice exactly (payee, amount, currency)")
@@ -284,7 +286,8 @@ class Service:
         ap = self.s.one("SELECT incident_id FROM approvals WHERE id=?", approval_id)
         if not ap:
             raise Refused("no such approval")
-        for p in self.s.q("SELECT request_id FROM payments WHERE incident_id=?", ap["incident_id"]):
+        # rows blocked here before anything was sent (CANCELLED, source "none") never reached Airwallex: nothing to re-read
+        for p in self.s.q("SELECT request_id FROM payments WHERE incident_id=? AND NOT (status='CANCELLED' AND status_source='none')", ap["incident_id"]):
             # strict=True: a failed or not-found read raises here. A cached CANCELLED, however recent,
             # never counts - the evidence has to come from the read made in this very attempt.
             try:
@@ -683,7 +686,10 @@ class Service:
         }
 
     def payment(self, request_id):
-        return dict(self.s.one("SELECT * FROM payments WHERE request_id=?", request_id))
+        row = self.s.one("SELECT * FROM payments WHERE request_id=?", request_id)
+        if not row:
+            raise Refused("no such payment")
+        return dict(row)
 
     # -------------------------------------------------------------- internals
     def _incident(self, iid):
@@ -745,8 +751,9 @@ class Service:
             raise Refused("duplicate lock: another payment on this incident may still go through")
         if any(p["status"] == "PAID" for p in pays):
             raise Refused("this incident already has a paid transfer")
-        if len(pays) >= pol["max_attempts"]:
-            raise Refused(f"already {len(pays)} attempts on this invoice (max {pol['max_attempts']}); each failed transfer can cost a non-refundable fee - escalate instead")
+        tries = [p for p in pays if not (p["status"] == "CANCELLED" and p["status_source"] == "none")]   # blocked-before-send rows cost nothing
+        if len(tries) >= pol["max_attempts"]:
+            raise Refused(f"already {len(tries)} attempts on this invoice (max {pol['max_attempts']}); each failed transfer can cost a non-refundable fee - escalate instead")
         if role == "replacement":
             orig = [p for p in pays if p["role"] == "original"]
             if not orig:

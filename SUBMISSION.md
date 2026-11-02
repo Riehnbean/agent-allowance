@@ -96,6 +96,11 @@ Things we checked by probing the sandbox:
 - **More evals** (`scripts/llm_eval.py`, `receipts/eval-13-*.txt`): 13 builder-written incidents, including judgment cases with no scam keyword ("$230 landed, the invoice was $250", a "CEO" demanding approvals be skipped). Rulebook 10/13; Claude Sonnet 5.5, GPT-OSS and the two cross-checked all 13/13. An older 9-case run with an offline Qwen2.5-3B backup got 7/9 (both misses were the cautious choice).
 - **`COVERAGE.md`** maps 128 researched payment failure routes to how the desk handles each: 95 built and tested, 19 partial, 14 out of scope with reasons. Sources include Airwallex docs, Nacha, FBI IC3, idempotency guidance and the OWASP LLM Top 10.
 
+## How it could make money (a plan, not yet tested with customers)
+- **Who pays:** the finance or AP team at a company already paying suppliers through Airwallex. The cost of one double payment or one redirected invoice is usually far more than a software subscription.
+- **How it would be sold:** as an add-on listed where Airwallex customers already look (Airwallex's partner/app ecosystem), priced per desk seat or per incident handled. No price has been tested yet.
+- **Next step:** short interviews with AP teams to learn how many failed or disputed payments they handle a month, and what one costs them.
+
 ## Honest scope
 - Short payments (the supplier received less than was sent) go to a person on purpose: the desk shows the gap and blocks a full re-send, but does not create a top-up payment by itself.
 - Sandbox only. One owner, a home currency of USD, and a small allowlist of suppliers: US LOCAL (ACH) payouts plus EUR payouts through a locked Airwallex FX quote.

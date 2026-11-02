@@ -70,6 +70,31 @@ class Round4(unittest.TestCase):
             self.svc.cosign(ap, "jordan")
 
 
+class Round5(unittest.TestCase):
+    def setUp(self):
+        from tests.test_allowance import Base
+        self.b = Base(); self.b.setUp(); self.svc = self.b.svc
+
+    def tearDown(self):
+        self.b.tearDown()
+
+    def test_replacement_blocked_before_sending_can_be_retried(self):
+        from allowance.service import Refused
+        from tests.test_allowance import BEN
+        iid = self.b.incident()
+        p = self.b.pay_original(iid)
+        self.b.fail_with(p["request_id"], "CHANNEL_TIMEOUT")
+        self.b.t += 10
+        self.b.fake.balance = 100                     # too little money: blocked before anything is sent
+        ap = self.svc.approve(iid, "replacement", "zach")
+        with self.assertRaises(Refused):
+            self.svc.pay(ap, "replacement", BEN, 25_000, "USD")
+        self.b.fake.balance = 10_000_000              # money arrives: a fresh approval must now work
+        self.b.t += 10
+        ap2 = self.svc.approve(iid, "replacement", "zach")
+        self.assertEqual(self.svc.pay(ap2, "replacement", BEN, 25_000, "USD")["status"], "SCHEDULED")
+
+
 class ServerRound4(unittest.TestCase):
     def test_oversized_invoice_is_refused_before_anything_is_created(self):
         import server

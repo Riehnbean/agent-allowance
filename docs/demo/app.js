@@ -2,7 +2,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const el = (t, cls, text) => { const e = document.createElement(t); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 let token = ""; try { token = sessionStorage.getItem("op-token") || ""; } catch {}
-let S = null, current = null; const fxCache = {};
+let S = null, current = null; const fxCache = {}, askedAt = {};
 const usd = c => "$" + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const money = (c, ccy) => !ccy || ccy === "USD" ? usd(c) : (ccy === "EUR" ? "€" : ccy + " ") + (c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const when = t => new Date(t * 1000).toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric", minute: "2-digit", second: "2-digit" }) + " CT";
@@ -36,7 +36,7 @@ async function load(quiet) {
   $("#gate").hidden = true;
   if (S.env) $("#env").textContent = S.env.replace(" - ", " · ");
   const p = S.policy;
-  $("#budget").textContent = `Spent today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} (includes small holds for possible bank fees) · max ${usd(p.per_tx_cap)} per payment`;
+  $("#budget").textContent = `Spent today: ${usd(p.committed_today)} of ${usd(p.daily_cap)} (includes the example payments and small holds for possible bank fees) · max ${usd(p.per_tx_cap)} per payment`;
   $("#agentname").textContent = window.__recorded ? "free open-source model (GPT-OSS) when reachable, else the rulebook · the video uses Claude" : S.agent;
   if (p.log) $("#agentname").append(el("span", p.log.intact ? "adv" : null, p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`));
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
@@ -114,21 +114,26 @@ function render() {
   const aiTag = { ready: ["ai-ready", "AI answer ready ✓"], thinking: ["ai-think", "AI is reading the evidence…"], }[i.ai];
   if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
   const ask = el("button", "primary", "Ask the AI");
-  ask.onclick = async () => { ask.disabled = true; ask.textContent = "Agent thinking…";
+  ask.onclick = async () => { if (Date.now() - (askedAt[i.id] || 0) < 4000) return; askedAt[i.id] = Date.now(); ask.disabled = true; ask.textContent = "Agent thinking…";
     await act(`/api/incidents/${i.id}/agent`, {}, r => `Advice ready: ${PLAIN_DECISION[r.decision] || r.decision}`); };
   if (!i.payments.length) { ask.disabled = true; ask.title = "Nothing has been sent yet - approve and send it below. The AI is for payments that went wrong."; }
   top.append(ask);
   ag.append(top);
   if (i.decision) {
     if (i.payments.some(p => p.created_at > i.decision.at)) ag.append(el("p", "stale", "This advice was given before the latest payment went out, so it may be out of date. Ask again if anything changes."));
-    ag.append(el("div", "decision adv d-" + i.decision.decision, i.decision.decision), el("div", "plaindec d-" + i.decision.decision, PLAIN_DECISION[i.decision.decision] || ""));
-    ag.append(el("p", "answered", i.decision.provenance === "model" || /AI|Claude|GPT/i.test(i.decision.answered_by || "") ? "Answered by: " + (i.decision.answered_by || "the AI") : "Answered by the safety rulebook (the AI wasn't reachable just then, so plain code answered)"));
-    const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
-    const rec = window.__recorded && window.__recorded[i.invoice];
-    if (rec && !(i.decision.provenance === "model" || /AI|Claude|GPT/i.test(i.decision.answered_by || ""))) {   // browser demo: the free AI didn't answer
-      const bx = el("div", "recorded"); bx.append(el("b", null, `Recorded answer from ${rec.answered_by} (real run, ${rec.at}): ${PLAIN_DECISION[rec.decision] || rec.decision}`));
-      for (const r of rec.reasons) bx.append(el("p", null, r));
-      bx.append(el("small", null, "Shown because the live AI didn't answer just now. It's a saved answer for this exact example, not a live one - the money rules above are live.")); ag.append(bx);
+    const isAI = i.decision.provenance === "model" || /AI|Claude|GPT/i.test(i.decision.answered_by || "");
+    const rec0 = !isAI && window.__recorded && window.__recorded[i.invoice];
+    const rec = rec0 && rec0.decision === i.decision.decision ? rec0 : null;   // only when it agrees with the live check (e.g. not after the invoice was paid)   // browser demo: the free AI didn't answer
+    if (rec) {   // one verdict on screen: Claude's saved answer for this example, with the live rulebook check underneath
+      ag.append(el("div", "plaindec d-" + rec.decision, PLAIN_DECISION[rec.decision] || rec.decision));
+      ag.append(el("p", "answered", `Answered by: ${rec.answered_by} - a saved answer for this exact example (real run, ${rec.at}), because the live AI didn't answer just now`));
+      const ul = el("ul"); for (const r of rec.reasons) ul.append(el("li", null, r)); ag.append(ul);
+      const same = rec.decision === i.decision.decision;
+      ag.append(el("p", "hint", `Live check just now by the built-in safety rules: ${PLAIN_DECISION[i.decision.decision] || i.decision.decision}${same ? " (same answer)" : " - the desk follows this live check"}.`));
+    } else {
+      ag.append(el("div", "decision adv d-" + i.decision.decision, i.decision.decision), el("div", "plaindec d-" + i.decision.decision, PLAIN_DECISION[i.decision.decision] || ""));
+      ag.append(el("p", "answered", isAI ? "Answered by: " + (i.decision.answered_by || "the AI") : "Answered by the safety rulebook (the AI wasn't reachable just then, so plain code answered)"));
+      const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
     }
     ag.append(el("p", "hint adv", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else if (!i.payments.length) ag.append(el("p", "hint", "Nothing has gone wrong yet. The AI helps once a payment fails or the supplier disputes it."));
@@ -148,7 +153,7 @@ function render() {
     if (p.fee) l.append(el("small", null, "Airwallex fee " + usd(p.fee)));
     l.append(el("small", "adv", `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
     const r = el("div", "payacts");
-    if (["UNKNOWN", "RESERVED"].includes(p.status)) {
+    if (p.status === "UNKNOWN" || (p.status === "RESERVED" && Date.now() / 1000 - (p.updated_at || p.created_at) > 60)) {   // a fresh RESERVED is just mid-send
       const rs = el("button", "warnbtn", "Re-send (same request ID)"); rs.title = "Only if Airwallex has never heard of it. Same request ID, all checks run again; Airwallex refuses a true duplicate.";
       rs.onclick = () => act(`/api/incidents/${i.id}/resend`, { request_id: p.request_id }, x => "Status now " + x.status); r.append(rs);
       const rl = el("button", null, "Release hold"); rl.title = "Only for a payment Airwallex has no record of (e.g. its approval expired). Needs a note; frees the budget.";
@@ -194,8 +199,8 @@ function render() {
     for (const x of r.proof_of_payment || []) L.push(`PAID: Airwallex transfer ${x.airwallex_transfer_id} (${x.role})`);
     for (const a of i.approvals || []) L.push(`APPROVAL #${a.id}: ${a.role} ${money(a.amount, i.currency)} - approved by ${a.approved_by}${a.cosigned_by ? ", co-signed by " + a.cosigned_by : ""}${a.used_by_request ? " (used once)" : ""}`);
     L.push("", "What happened, step by step (source in brackets):");
-    for (const e of r.events.filter(e => e.incident_id === i.id)) { const b = e.body || {}; L.push(`${new Date(e.at * 1000).toLocaleString("en-US", { timeZone: "America/Chicago" })} CT  [${e.provenance}] ${e.kind.replace(/_/g, " ")}${b.by ? " by " + b.by : ""}${b.note ? ` - note: "${b.note}"` : ""}  #${(e.hash || "").slice(0, 10)}`); }
-    L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text", "", "Full machine-readable receipt follows:", JSON.stringify(r, null, 1));
+    for (const e of r.events.filter(e => e.incident_id === i.id)) { const b = e.body || {}; L.push(`${new Date(e.at * 1000).toLocaleString("en-US", { timeZone: "America/Chicago" })} CT  [${/simulat/.test(e.kind) ? "simulator" : e.provenance}] ${e.kind.replace(/_/g, " ")}${b.by ? " by " + b.by : ""}${b.note ? ` - note: "${b.note}"` : ""}  #${(e.hash || "").slice(0, 10)}`); }
+    L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text", "", "Machine-readable copy for auditors (amounts in cents) follows:", JSON.stringify(r, null, 1));
     const a = el("a"); a.href = URL.createObjectURL(new Blob([L.join("\n")], { type: "text/plain" })); a.download = `receipt-${i.invoice}.txt`; a.click(); } catch (err) { toast(err.message, true); } };
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, r => r && r.pending ? "Reopen request saved - a second person must confirm it" : "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
@@ -211,7 +216,7 @@ function render() {
   if (i.currency !== S.policy.currency && !i.payments.some(p => p.status === "PAID")) {   // show the dollar cost before anyone approves
     const fx = el("p", "fxbig", "Checking today's Airwallex rate…"); op.append(fx);
     const c = fxCache[i.id]; const get = c && Date.now() - c.t < 120000 ? c.p : (fxCache[i.id] = { t: Date.now(), p: api(`/api/incidents/${i.id}/fx-preview`, {}) }).p;
-    get.then(q => { if (q.cost) fx.textContent = `${money(i.amount, i.currency)} ≈ ${usd(q.cost)} at Airwallex's rate ${q.rate}${q.mid_rate ? " (market " + q.mid_rate + ")" : ""}. This dollar amount is what the ${usd(S.policy.dual_approval_over)} co-sign and ${usd(S.policy.per_tx_cap)} limits check. The rate is locked when you press Send.`; })
+    get.then(q => { if (q.cost) fx.textContent = `${money(i.amount, i.currency)} ≈ ${usd(q.cost)} at Airwallex's rate ${q.rate}${q.mid_rate ? " (market " + q.mid_rate + ")" : ""}. This dollar amount is what the ${usd(S.policy.dual_approval_over)} co-sign and ${usd(S.policy.per_tx_cap)} limits check. The rate is locked when you press Send (it can move by a cent or two).`; })
       .catch(() => { delete fxCache[i.id]; fx.textContent = "Couldn't get a rate right now - the exact dollar cost is locked and checked when you press Send."; });
   }
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {

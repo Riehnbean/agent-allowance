@@ -182,6 +182,13 @@ def _short(x):
     return hashlib.sha256(str(x).encode()).hexdigest()[:12]
 
 
+def stop_target():
+    """A resume request is bound to THIS stop (the event that turned it on), not just its wording."""
+    pol = SVC.s.policy()
+    ev = SVC.s.one("SELECT id FROM events WHERE kind='kill_switch_on' ORDER BY id DESC LIMIT 1")
+    return "desk|" + _short(pol["killed_reason"]) + "|" + str(ev["id"] if ev else 0)
+
+
 def reopen_target(iid):
     """A reopen request is bound to what the requester saw: the alarm and the newest payment's status."""
     inc = SVC.s.one("SELECT alert FROM incidents WHERE id=?", iid)
@@ -250,7 +257,7 @@ def handle(method, path, body, op="operator"):
         if pol["killed_by"] == "system" and len(OPERATORS) > 1:
             # The desk stopped itself (payee edited, unknown transfers...). Two people resume it.
             # Bound to THIS stop: if the desk stops again for a different reason, the request no longer applies.
-            return {"pending": SVC.request_action("unkill", "desk|" + _short(pol["killed_reason"]), body.get("note"), op)}
+            return {"pending": SVC.request_action("unkill", stop_target(), body.get("note"), op)}
         if not str(body.get("note") or "").strip():
             raise Refused("write why it is safe to resume - it is kept in the evidence log")
         SVC.unkill(op, single_operator_mode=len(OPERATORS) <= 1)
@@ -270,7 +277,7 @@ def handle(method, path, body, op="operator"):
                 raise Refused("this invoice changed since the reopen was requested (new alarm or payment) - look again and ask again")
             if pend["kind"] == "unkill":
                 pol = SVC.s.policy()
-                if not pol["killed"] or "desk|" + _short(pol["killed_reason"]) != pend["target"]:
+                if not pol["killed"] or stop_target() != pend["target"]:
                     raise Refused("the desk stopped again for a different reason since this request - ask again")
         a = SVC.confirm_action(int(p[2]), op)
         if a["kind"] == "unkill":
@@ -314,6 +321,8 @@ def handle(method, path, body, op="operator"):
                                 allow_similar=bool(body.get("separate_invoice")))
         return {"id": iid}
     if len(p) >= 4 and p[1] == "incidents":
+        if not p[2].isdigit():
+            raise Refused("no such incident")
         iid, act = int(p[2]), p[3]
         inc = SVC.s.one("SELECT * FROM incidents WHERE id=?", iid)
         if act == "approve":

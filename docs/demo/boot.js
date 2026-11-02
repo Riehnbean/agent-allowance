@@ -94,7 +94,10 @@ window.fetch = async (url, opt = {}) => {
   if (status === 200 && /\/incidents\/\d+\/(pay|resend)$/.test(u.pathname)) {
     // simulated Airwallex: the bank delivers a sent payment a few seconds later (the real sandbox needs a manual step)
     try { const rid = JSON.parse(body).request_id; const tok = h["X-Operator-Token"] || "";
-      if (rid) setTimeout(async () => { for (const s of ["SENT", "PAID"]) await window.fetch(`/api/payments/${rid}/simulate`, { method: "POST", headers: { "Content-Type": "application/json", "X-Operator-Token": tok }, body: JSON.stringify({ status: s }) });
+      const statusOf = async () => { const st = await (await window.fetch("/api/state", { headers: { "X-Operator-Token": tok } })).json();
+        for (const inc of st.incidents || []) for (const p of inc.payments) if (p.request_id === rid) return p.status; return null; };
+      if (rid) setTimeout(async () => { for (const s of ["SENT", "PAID"]) { const now = await statusOf();   // a tester may have failed it meanwhile
+        if (!now || ["PAID", "CANCELLED", "FAILED"].includes(now) || now === s) continue; await window.fetch(`/api/payments/${rid}/simulate`, { method: "POST", headers: { "Content-Type": "application/json", "X-Operator-Token": tok }, body: JSON.stringify({ status: s }) }); }
         if (typeof load === "function") load(true).catch(() => {}); }, 4000); } catch {}
   }
   return new Response(body, { status, headers: { "Content-Type": "application/json" } });

@@ -515,7 +515,7 @@ class FailClosed(Base):
         import sqlite3
         iid = self.incident()
         p = self.pay_original(iid)
-        ap = self.svc.approve(iid, "original", "zach")
+        ap = self.svc.payment(p["request_id"])["approval_id"]   # code would refuse a new approval now; the index must hold anyway
         with self.assertRaisesRegex(sqlite3.IntegrityError, "incident_id"):
             self.svc.s.db.execute("INSERT INTO payments(request_id,incident_id,role,approval_id,beneficiary_id,amount,currency,status,created_at,updated_at)"
                                   " VALUES('x',?,'replacement',?,?,1,'USD','RESERVED',0,0)", (iid, ap, BEN))

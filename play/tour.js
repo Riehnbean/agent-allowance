@@ -19,9 +19,15 @@
     { sel: "p.hint", text: "twice", t: "Send is now greyed out: each approval works once, so the supplier can't be paid twice." },
     { sel: "section.card", text: "Payments on this incident", t: "Now Airwallex delivers it. In this demo the pretend bank confirms in a few seconds - just wait.", wait: () => on("INV-1042") && [...document.querySelectorAll("#detail div.pay")].some(d => /paid/i.test(d.textContent) && /Replacement/.test(d.textContent)) },
     { sel: "section.card", text: "Payments on this incident", t: "Paid ✓. There's now a button to copy proof of payment for the supplier, and the receipt shows every step." },
+    { sel: "input.note", t: "Last step for this one: type what you checked (e.g. \"Airwallex shows paid\") and tap Close incident.", wait: () => /Done/.test([...document.querySelectorAll("#list li")].find(l => /INV-1042/.test(l.textContent))?.textContent || ""),
+      next: async () => { const n = document.querySelector("input.note"); if (n && !n.value) n.value = "Airwallex shows the replacement PAID"; [...document.querySelectorAll("button")].find(b => b.textContent === "Close incident")?.click(); } },
     { sel: "#list li", text: "INV-1043", t: "Now a scam. Tap INV-1043.", wait: () => on("INV-1043") },
     { sel: "section.card.agent", t: "The supplier wants the money sent to a NEW bank account, so the code froze payments the moment that email arrived. Tap \"Ask the AI\".", wait: () => on("INV-1043") && answered() },
     { sel: "section.card.agent", t: "It says: get a person to check. And there's no way to pay this one, whatever the AI says." },
+    { sel: "#list li", text: "INV-1044", t: "Tap INV-1044. Airwallex says it's paid, but the supplier says only $280 of $300 arrived.", wait: () => on("INV-1044") },
+    { sel: "section.card.story", t: "The desk shows the $20 gap and won't let anyone simply pay the full $300 again. A person checks first (it's usually a bank fee)." },
+    { sel: "#list li", text: "EU-2201", t: "Tap EU-2201: a German supplier billing in euros.", wait: () => on("EU-2201") },
+    { sel: "p.fxbig", t: "Before anyone approves, it shows the dollar cost at Airwallex's exchange rate. That dollar amount is what the limits and the two-person rule check." },
     { sel: "#kill", t: "Last one: tap the red STOP button. Now nothing at all can be paid until someone resumes it.", wait: () => /STOPPED/.test(document.querySelector("#kill")?.textContent || "") },
     { sel: null, t: () => "That's the idea: the AI gives advice, the code protects the money, and a person approves every payment. " + (window.__aiOff || /safety rulebook/.test(document.body.textContent)
       ? "(The free AI was busy just now, so the built-in safety rulebook answered instead - the money rules work the same either way. The video shows the full app with Claude.)"
@@ -57,8 +63,8 @@
     if (!box) { box = document.createElement("div"); box.id = "tour"; document.body.appendChild(box); box.style.top = topPx(); }
     box.innerHTML = `<div class="n">Step ${k + 1} of ${STEPS.length}</div><div>${typeof s.t === "function" ? s.t() : s.t}</div><div class="b"><button data-a="x">Close</button>${k ? '<button data-a="b">Back</button>' : ""}<button class="go" data-a="n">${k === STEPS.length - 1 ? "Done" : s.wait && !s.stay ? "Skip" : "Next"}</button></div>`;
     box.onclick = e => { const a = e.target.dataset.a; if (a === "x") { k = -1; show(); } if (a === "b") { k--; show(); }
-      if (a === "n" && s.next) { box.querySelector('[data-a="n"]').disabled = true; Promise.resolve(s.next()).finally(() => setTimeout(() => { k++; show(); }, 600)); return; }
-      if (a === "n") { const t = s.wait && !s.stay && target(s); const c = t && (t.matches("button") ? t : (t.querySelector("button.primary") || t.querySelector("button"))); if (c && !c.disabled) { c.click(); return; } k++; show(); } };   // Skip does the step for you
+      if (a === "n" && s.next) { clearInterval(tick); box.querySelector('[data-a="n"]').disabled = true; Promise.resolve(s.next()).finally(() => setTimeout(() => { k++; show(); }, 600)); return; }
+      if (a === "n") { const t = s.wait && !s.stay && target(s); const c = t && (t.matches("button") ? t : (t.matches("li") ? t.querySelector("button") : t.querySelector("button.primary"))); if (c && !c.disabled) { c.click(); return; } k++; show(); } };   // Skip does the step for you
     let scrolled = false;
     tick = setInterval(() => {
       const t = target(s); clearHl();
