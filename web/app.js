@@ -182,7 +182,12 @@ function render() {
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, r => r && r.pending ? "Reopen request saved - a second person must confirm it" : "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
   if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";
-  ops.append(ap, pay, note, reopen, close, rc); op.append(ops);
+  const csv = el("a", "btnlink", "Log as spreadsheet (CSV)"); csv.href = "#"; csv.onclick = async e => { e.preventDefault(); try {
+    const r = await api(`/api/incidents/${i.id}/receipt`); const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = [["time_utc", "source", "event", "actor", "details", "hash"].join(",")].concat(r.events.filter(e => e.incident_id).map(e =>
+      [new Date(e.at * 1000).toISOString(), e.provenance, e.kind, e.actor, JSON.stringify(e.body), e.hash].map(q).join(",")));
+    const a = el("a"); a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" })); a.download = `log-${i.invoice}.csv`; a.click(); } catch (err) { toast(err.message, true); } };
+  ops.append(ap, pay, note, reopen, close, rc, csv); op.append(ops);
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
     if (unused.approved_by !== S.me) {
       const cb = el("button", "primary", `Co-sign ${money(i.amount, i.currency)} as ${S.me}`); cb.onclick = () => act(`/api/incidents/${i.id}/cosign`, { role }, r => "Co-signed by " + r.cosigned_by);
