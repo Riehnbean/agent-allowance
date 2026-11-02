@@ -58,7 +58,15 @@ def seed():
 
 
 if not svc.s.one("SELECT 1 FROM incidents"):
-    seed()
+    # seeding pays the same supplier several times; lift the co-sign/anti-splitting line only while the examples are created
+    _keep = svc.s.policy()["dual_approval_over"]
+    svc.s.db.execute("UPDATE policy SET dual_approval_over=per_tx_cap")
+    try:
+        seed()
+    finally:
+        svc.s.db.execute("UPDATE policy SET dual_approval_over=?", (_keep,))
+if os.environ.get("DEMO_COSIGN_OVER"):  # e.g. 20000 = $200: show two-person sign-off on the seeded invoices
+    svc.s.db.execute("UPDATE policy SET dual_approval_over=?", (int(os.environ["DEMO_COSIGN_OVER"]),))
 port = os.environ.get("PORT", "8710")
 print(f"\n  Agent Allowance - " + ("Airwallex SANDBOX demo (practice money)" if SANDBOX else "offline demo (simulated Airwallex, nothing leaves this machine)") + "\n"
       f"  Open http://127.0.0.1:{port}  and sign in with token:  zach   (second operator: jordan)\n"
