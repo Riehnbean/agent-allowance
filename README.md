@@ -76,7 +76,7 @@ export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (n
 # a click never waits more than AGENT_CLICK_BUDGET (default 6s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
-./scripts/test.sh   # 184 offline tests, no network
+./scripts/test.sh   # 185 offline tests, no network
 python3 -m watchdog.cycle --minutes 3   # Watchdog: attack, auto-repair behind gates (needs ANTHROPIC_API_KEY to repair), report
 python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
 AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)
