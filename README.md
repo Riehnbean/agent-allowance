@@ -13,7 +13,7 @@ Prefer a full dev environment? [![Open in GitHub Codespaces](https://github.com/
 
 **Who it's for.** Accounts-payable teams at growing companies (roughly 20-500 people) that pay suppliers through Airwallex, often across currencies, without a fraud team.
 
-**How it differs.** Ramp, Bill.com and agent spend-limit tools cap *how much* can be spent. None of them decide what to do when a payment goes wrong: whether a failed transfer is safe to re-send, whether a "we never got paid" email is a scam, or whether only part of the money arrived. Agent Allowance handles that moment - and the AI can never move money itself.
+**How it differs.** AP platforms and payee-verification tools (Bill.com, Ramp, Trustpair, Eftsure) screen payments *before* they go out: duplicate checks, approval rules, bank-detail verification. Agent Allowance works *after* a payment has gone wrong - failed, partly paid, or disputed by email - using the live Airwallex transfer status to decide whether it is safe to send again, a likely scam, or short-paid. The AI only recommends; code and people hold the money.
 
 Team: Zach's Team (Zach Riehn). Built by AI coding agents (Claude) under Zach's direction during the Build Phase.
 
@@ -100,6 +100,6 @@ a provider record that doesn't match our transfer is refused (PROVIDER_MISMATCH)
 "accept new bank details" request is bound to the exact details both people saw, and unknown webhooks are dropped before anything is stored.
 
 ## Honest scope
-Sandbox only, one owner, one currency (USD), one supplier, LOCAL (ACH) transfers. Not production-ready. No customers or revenue.
+Sandbox only, one owner, USD home currency, a small supplier allowlist (US ACH, plus EUR via a locked Airwallex FX quote). Not production-ready. No customers or revenue.
 Operator auth is a single shared token for the demo. The evidence log is tamper-*evident* for the app, not tamper-proof against a
 database administrator.

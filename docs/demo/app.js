@@ -109,12 +109,13 @@ function render() {
   if (aiTag) top.append(el("span", "aitag " + aiTag[0], aiTag[1]));
   const ask = el("button", "primary", "Ask the AI");
   ask.onclick = async () => { ask.disabled = true; ask.textContent = "Agent thinking…";
-    await act(`/api/incidents/${i.id}/agent`, {}, r => `Agent: ${r.decision} · ${r.agent === "llm" ? (r.model_nice || r.model) : "rulebook"} · ${(r.ms / 1000).toFixed(1)}s`); };
+    await act(`/api/incidents/${i.id}/agent`, {}, r => `Advice ready: ${PLAIN_DECISION[r.decision] || r.decision}`); };
+  if (!i.payments.length) { ask.disabled = true; ask.title = "Nothing has been sent yet - approve and send it below. The AI is for payments that went wrong."; }
   top.append(ask);
   ag.append(top);
   if (i.decision) {
     ag.append(el("div", "decision adv d-" + i.decision.decision, i.decision.decision), el("div", "plaindec d-" + i.decision.decision, PLAIN_DECISION[i.decision.decision] || ""));
-    ag.append(el("p", "answered", "Answered by: " + (i.decision.answered_by || (i.decision.provenance === "model" ? "the AI" : "the rulebook (plain code, no AI)"))));
+    ag.append(el("p", "answered", i.decision.provenance === "model" || /AI|Claude|GPT/i.test(i.decision.answered_by || "") ? "Answered by: " + (i.decision.answered_by || "the AI") : "Answered by the safety rulebook (the AI wasn't reachable just then, so plain code answered)"));
     const ul = el("ul"); for (const r of i.decision.reasons || []) ul.append(el("li", /^\(/.test(r) ? "adv" : null, r)); ag.append(ul);
     ag.append(el("p", "hint adv", `Allowed by code at the time: ${(i.decision.allowed || []).join(", ")} · ${when(i.decision.at)} · answered by: ${i.decision.answered_by || (i.decision.provenance === "model" ? "AI model" : "Rulebook (code)")}`));
   } else ag.append(el("p", "hint", "The agent can only pick from: " + i.allowed.join(", ") + ". It cannot pay, approve or change who gets paid."));
@@ -152,6 +153,12 @@ function render() {
       }
       r.append(sim);
     }
+    if (p.status === "PAID" && p.provider_id) {
+      const proof = el("button", null, "Copy payment proof for the supplier");
+      proof.onclick = async () => { const t = `Hi ${i.supplier}, here is proof of payment for ${i.invoice}: ${money(p.amount, p.currency)} sent via Airwallex, transfer reference ${p.provider_id}, status PAID${p.updated_at ? " (confirmed " + new Date(p.updated_at * 1000).toISOString().slice(0, 10) + ")" : ""}. If it hasn't reached you, please check with your bank using that reference.`;
+        try { await navigator.clipboard.writeText(t); toast("Payment proof copied - paste it into your reply"); } catch { prompt("Copy this payment proof:", t); } };
+      r.prepend(proof);
+    }
     if (p.status === "PAID" && p.provider_id) { const sim = el("span", "sim adv"); sim.append(el("small", null, "Sandbox bank simulator:")); const b = el("button", "warnbtn", "Bank returns it days later"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "FAILED", failure_type: "BENEFICIARY_BANK_RETURNED" }, "Simulated a return after PAID"); sim.append(b); r.append(sim); }
     row.append(l, r); ps.append(row);
   }
@@ -166,7 +173,12 @@ function render() {
   const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - status ${r.status}`); pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
   const note = el("input", "note"); note.placeholder = i.alert ? "Resolution note (required: what you checked)" : "Optional note"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
-  const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); try { const r = await api(`/api/incidents/${i.id}/receipt`); const a = el("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: "application/json" })); a.download = `receipt-${i.invoice}.json`; a.click(); } catch (err) { toast(err.message, true); } };
+  const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); try { const r = await api(`/api/incidents/${i.id}/receipt`); const L = [`RECEIPT - ${i.supplier} ${i.invoice} - ${money(i.amount, i.currency)}`, `Environment: ${r.environment}`, `Log intact: ${r.log_integrity.intact ? "yes" : "NO"} (${r.log_integrity.entries_checked} entries checked)`, ""];
+    for (const x of r.proof_of_payment || []) L.push(`PAID: Airwallex transfer ${x.airwallex_transfer_id} (${x.role})`);
+    L.push("", "What happened, step by step (source in brackets):");
+    for (const e of r.events.filter(e => e.incident_id)) L.push(`${new Date(e.at * 1000).toISOString().slice(0, 19).replace("T", " ")}  [${e.provenance}] ${e.kind.replace(/_/g, " ")}  #${(e.hash || "").slice(0, 10)}`);
+    L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text", "", "Full machine-readable receipt follows:", JSON.stringify(r, null, 1));
+    const a = el("a"); a.href = URL.createObjectURL(new Blob([L.join("\n")], { type: "text/plain" })); a.download = `receipt-${i.invoice}.txt`; a.click(); } catch (err) { toast(err.message, true); } };
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, r => r && r.pending ? "Reopen request saved - a second person must confirm it" : "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
   if (i.state === "ESCALATED") note.placeholder = "What did you check? (needed to reopen or close)";

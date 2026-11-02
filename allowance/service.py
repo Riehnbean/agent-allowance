@@ -141,6 +141,9 @@ class Service:
             raise Refused("an approval must match the invoice exactly (payee, amount, currency)")
         if not isinstance(ttl, int) or not 0 < ttl <= 900:
             raise Refused("an approval lasts at most 15 minutes")
+        pol = self.s.policy()
+        if c == pol["currency"] and a > pol["per_tx_cap"]:
+            raise Refused(f"over the per-payment cap of {pol['per_tx_cap']/100:.2f} - can't be approved")
         with self.s.tx():
             ph = self.s.one("SELECT details_hash FROM beneficiaries WHERE id=?", b)
             cur = self.s.db.execute(

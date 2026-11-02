@@ -266,7 +266,11 @@ class Caps(Base):
 
     def test_per_tx_cap(self):
         iid = self.incident(amount=150_000)
+        with self.assertRaisesRegex(Refused, "per-payment"):     # refused at approval (Nov 2), and again at send
+            self.svc.approve(iid, "original", "zach")
+        self.svc.s.db.execute("UPDATE policy SET per_tx_cap=200000")
         ap = self.svc.approve(iid, "original", "zach")
+        self.svc.s.db.execute("UPDATE policy SET per_tx_cap=100000")
         with self.assertRaisesRegex(Refused, "per-payment"):
             self.svc.pay(ap, "original", BEN, 150_000, "USD")
 

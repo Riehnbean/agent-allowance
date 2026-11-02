@@ -27,7 +27,7 @@ An AI agent can help read the situation. But a plain "AI that can send payments"
 
 **Who it's for.** Accounts-payable teams at growing companies (roughly 20-500 people) that pay suppliers through Airwallex, often across currencies, without a fraud team.
 
-**How it differs.** Ramp, Bill.com and agent spend-limit tools cap *how much* can be spent. None of them decide what to do when a payment goes wrong: whether a failed transfer is safe to re-send, whether a "we never got paid" email is a scam, or whether only part of the money arrived. Agent Allowance handles that moment - and the AI can never move money itself.
+**How it differs.** AP platforms and payee-verification tools (Bill.com, Ramp, Trustpair, Eftsure) screen payments *before* they go out: duplicate checks, approval rules, bank-detail verification. Agent Allowance works *after* a payment has gone wrong - failed, partly paid, or disputed by email - using the live Airwallex transfer status to decide whether it is safe to send again, a likely scam, or short-paid. The AI only recommends; code and people hold the money.
 
 
 ## The idea: the AI advises, the code holds the money
@@ -96,7 +96,7 @@ Things we checked by probing the sandbox:
 - **`COVERAGE.md`** maps 128 researched payment failure routes to how the desk handles each: 95 built and tested, 19 partial, 14 out of scope with reasons. Sources include Airwallex docs, Nacha, FBI IC3, idempotency guidance and the OWASP LLM Top 10.
 
 ## Honest scope
-- Sandbox only. It covers one owner, USD, one supplier and LOCAL (ACH) transfers.
+- Sandbox only. One owner, a home currency of USD, and a small allowlist of suppliers: US LOCAL (ACH) payouts plus EUR payouts through a locked Airwallex FX quote.
 - Operator login is a demo token. The evidence log is tamper-*evident* inside the app, not tamper-proof against a database admin.
 - It is not production-ready, and it has no customers or revenue.
 - What it shows is a pattern: **let an AI agent help with payment incidents while every path that moves money stays in tested code the agent cannot call.**
