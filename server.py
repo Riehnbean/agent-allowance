@@ -150,7 +150,8 @@ def watchdog_status():
 
 
 def ensure_beneficiary(op="operator"):
-    b = SVC.s.one("SELECT * FROM beneficiaries LIMIT 1")
+    # the demo supplier by name (rowid order is not stable once another payee is re-saved)
+    b = SVC.s.one("SELECT * FROM beneficiaries WHERE name=? ORDER BY rowid LIMIT 1", "Maple Lumber Supply LLC")
     if b:
         return b["id"]
     r = API.create_beneficiary({
@@ -188,7 +189,8 @@ def unused_approval(iid, role):
     return a["id"]
 
 
-TEXT_FIELDS = ("note", "reason", "text", "role", "request_id", "status", "failure_type", "invoice", "amount")
+TEXT_FIELDS = ("note", "reason", "text", "role", "request_id", "status", "failure_type", "invoice", "amount", "supplier")
+STRICT_TEXT = ("note", "reason", "text", "supplier", "role", "request_id", "invoice")
 
 
 def handle(method, path, body, op="operator"):
@@ -197,6 +199,14 @@ def handle(method, path, body, op="operator"):
     for k in TEXT_FIELDS:
         if k in body and body[k] is not None and not isinstance(body[k], (str, int, float)) or isinstance(body.get(k), bool):
             raise ValueError(f"{k} must be text")
+    for k in STRICT_TEXT:
+        if body.get(k) is not None and not isinstance(body[k], str):
+            raise ValueError(f"{k} must be text")
+    if "deadline_hours" in body:
+        import math
+        dh = float(body["deadline_hours"])
+        if not math.isfinite(dh) or not 0 < dh <= 24 * 365:
+            raise ValueError("deadline_hours must be a number of hours")
     p = path.strip("/").split("/")
     if method == "GET" and path == "/api/state":
         return state()
@@ -453,6 +463,8 @@ def watchdog_thread():
         from watchdog.cycle import cycle
         while True:
             time.sleep(every)
+            if watchdog_status().get("state") == "awaiting_approval":
+                continue  # a fix is waiting for a person: never overwrite it or lift its stop on the next run
             try:
                 st = cycle(float(os.environ.get("WATCHDOG_MINUTES", "3")), desk=SVC)
                 if st["fixed"] and WATCHDOG_APPLY != "auto":

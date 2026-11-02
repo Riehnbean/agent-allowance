@@ -70,7 +70,9 @@ class Service:
                 self.s.log("policy", "beneficiary_refused", "decided", None, id=provider_id, name=name, reason="same bank account as " + twin["name"])
                 raise Refused(f"this bank account is already on file under a different supplier name ({twin['name']}) - a common money-mule pattern; needs an override reason")
             self.s.db.execute(
-                "INSERT OR REPLACE INTO beneficiaries(id,name,bank_fingerprint,approved_by,approved_at,details_hash,account_key,details_changed_at) VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO beneficiaries(id,name,bank_fingerprint,approved_by,approved_at,details_hash,account_key,details_changed_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name,bank_fingerprint=excluded.bank_fingerprint,approved_by=excluded.approved_by,"
+                "approved_at=excluded.approved_at,details_hash=excluded.details_hash,account_key=excluded.account_key,details_changed_at=excluded.details_changed_at",
                 (provider_id, name, fingerprint, operator, self.now(), h, ak, changed_at),
             )
             self.s.log("operator", "beneficiary_allowed", "operator", None, id=provider_id, name=name, fingerprint=fingerprint,

@@ -174,10 +174,11 @@ function render() {
   // Operator actions
   const op = el("section", "card"); op.append(el("h3", null, "You"));
   const ops = el("div", "btns");
-  const role = i.payments.length ? "replacement" : "original";
+  // a payment that was blocked before reaching Airwallex never went out, so the next one is still the original
+  const role = i.payments.some(p => !(p.status === "CANCELLED" && p.status_source === "none")) ? "replacement" : "original";
   const unused = i.approvals.find(a => a.role === role && !a.used_by_request && a.expires_at * 1000 > Date.now());
   const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
-  const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - ${PLAIN_STATUS[r.status] || r.status.toLowerCase()}`); pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
+  const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => { pay.disabled = true; return act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - ${PLAIN_STATUS[r.status] || r.status.toLowerCase()}`); }; pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
   const note = el("input", "note"); note.placeholder = "Note: what you checked (needed to close)"; 
   const close = el("button", null, "Close incident"); close.onclick = () => act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident resolved"); close.disabled = !i.allowed.includes("CLOSE") || i.state === "RESOLVED";
   close.onclick = () => { if (!note.value.trim()) { note.focus(); return toast("Write a short note first - what you checked before closing", true); } act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident closed"); };
