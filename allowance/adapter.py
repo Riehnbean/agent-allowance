@@ -183,6 +183,10 @@ def details_hash(beneficiary):
     parts = [bd.get(k, "") for k in ("account_number", "account_routing_type1", "account_routing_value1", "swift_code",
                                     "iban", "bank_country_code", "account_currency", "account_name", "local_clearing_system")]
     parts.append(b.get("company_name") or " ".join(filter(None, [b.get("first_name"), b.get("last_name")])))
+    pp = b.get("paypal")
+    if pp:  # PayPal rail: WHERE money goes is the receiver (email / PayPal ID). Only appended when present,
+        # so existing bank-account fingerprints are unchanged.
+        parts += ["PAYPAL", pp.get("recipient_type", ""), pp.get("receiver", "")]
     norm = "|".join(str(x).strip().upper() for x in parts)
     return hashlib.sha256(norm.encode()).hexdigest()
 
@@ -190,5 +194,8 @@ def details_hash(beneficiary):
 def account_key(beneficiary):
     """Account + routing only (no name) - used to spot one bank account reused under different names."""
     b = beneficiary.get("beneficiary", beneficiary)
+    pp = b.get("paypal")
+    if pp:  # one PayPal receiver reused under different supplier names is the same mule pattern
+        return "PAYPAL|" + str(pp.get("receiver", "")).strip().upper()
     bd = b.get("bank_details", {})
     return "|".join(str(bd.get(k, "")).strip().upper() for k in ("account_number", "account_routing_value1", "iban", "swift_code"))

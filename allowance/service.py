@@ -547,7 +547,12 @@ class Service:
         r = self.reconcile(request_id)
         if r["status"] not in ("UNKNOWN", "RESERVED"):
             return r  # Airwallex has it after all - nothing to release
-        if self.p.find_by_request_id(request_id) is not None:
+        try:
+            found = self.p.find_by_request_id(request_id)
+        except (Ambiguous, ProviderError) as e:
+            # "Could not look" is not "not there" (PayPal has no lookup by sender_batch_id): keep it held.
+            raise Refused(f"could not confirm with the provider that it never received this payment ({e}) - nothing released") from None
+        if found is not None:
             raise Refused("Airwallex now shows this payment - reconcile instead of releasing")
         with self.s.tx():  # a re-send may have started meanwhile: re-check under the same lock submit() uses
             row = self.payment(request_id)
@@ -835,7 +840,12 @@ class Service:
         det = fail.get("details") if isinstance(fail.get("details"), dict) else {}
         ftype = det.get("type") or t.get("failure_type")
         # Map the provider's failure *reason* to our retry classes via the message when needed.
-        ftype = _classify_failure(fail.get("message"), ftype) if status == "CANCELLED" else None
+        # A non-Airwallex rail (PayPal) classifies its own error names onto our types in its adapter (desk_type);
+        # anything not on our list is UNCLASSIFIED, which is never auto-retried.
+        if status == "CANCELLED" and fail.get("desk_type"):
+            ftype = fail["desk_type"] if fail["desk_type"] in ALL_FAILURE_TYPES else "UNCLASSIFIED"
+        else:
+            ftype = _classify_failure(fail.get("message"), ftype) if status == "CANCELLED" else None
         prev = self.payment(request_id)
         fee = payer_pays = None
         bad_money = False
