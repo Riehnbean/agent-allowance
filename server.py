@@ -439,6 +439,10 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, code, obj, ctype="application/json"):
         data = obj if isinstance(obj, bytes) else json.dumps(obj, default=str).encode()
+        if PAYPAL and not isinstance(obj, bytes):
+            # The rules, alarms and AI wording were written for the Airwallex rail; on the PayPal rail the
+            # same sentences name PayPal (display text only - field names are lower-case and untouched).
+            data = data.replace(b"Airwallex", b"PayPal").replace(b"bank details", b"payout details")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")

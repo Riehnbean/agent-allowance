@@ -1,3 +1,4 @@
+let RAIL = "Airwallex";  // which payment rail this desk runs on (state.rail): Airwallex or PayPal
 "use strict";
 const $ = (s, r = document) => r.querySelector(s);
 const el = (t, cls, text) => { const e = document.createElement(t); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -35,6 +36,7 @@ async function load(quiet) {
   lastSig = sig; S = next;
   $("#gate").hidden = true;
   if (S.env) $("#env").textContent = S.env.replace(" - ", " · ");
+  RAIL = S.rail || "Airwallex"; document.querySelectorAll(".railname").forEach(e => e.textContent = RAIL);
   const p = S.policy;
   $("#budget").textContent = `${usd(p.committed_today)} of ${usd(p.daily_cap)} today · max ${usd(p.per_tx_cap)} per payment`; $("#budget").title = "Money committed today, including the example payments and small holds for possible bank fees";
   $("#agentname").textContent = window.__recorded ? "free open-source AI (GPT-OSS) when reachable, else Claude's saved answers · the video uses live Claude" : S.agent;
@@ -76,13 +78,13 @@ const neverSent = (p, reopenedAt) => p.status === "CANCELLED" && p.status_source
 const cap = n => n ? n[0].toUpperCase() + n.slice(1) : n;
 function pill(status) { return el("span", "pill p-" + status, status); }
 let advanced = false; try { advanced = localStorage.getItem("adv") === "1"; } catch {}
-const PLAIN_STATUS = { RESERVED: "being sent", UNKNOWN: "unclear - checking with Airwallex", CREATED: "on its way", SCHEDULED: "on its way", PROCESSING: "on its way",
+const PLAIN_STATUS = { RESERVED: "being sent", get UNKNOWN() { return "unclear - checking with " + RAIL; }, CREATED: "on its way", SCHEDULED: "on its way", PROCESSING: "on its way",
   SENT: "on its way", OVERDUE: "late", PAID: "paid", CANCELLED: "failed", FAILED: "failing" };
 const PLAIN_DECISION = { ESCALATE: "Get a person to check", REPLACE: "Safe to send it again", WAIT: "Wait - it's still on its way", CLOSE: "Done - it was paid" };
 function whatHappened(i) {
   const last = i.payments[i.payments.length - 1];
   if (last && last.status === "PAID") { const got = (i.events || []).filter(e => e.kind === "supplier_message").map(e => /\$\s?([\d,]+(?:\.\d\d)?)/.exec(e.body.text || "")).filter(Boolean).map(m => Math.round(parseFloat(m[1].replace(/,/g, "")) * 100)).find(c => c > 0 && c < last.amount);
-    if (got) return `Paid ${money(last.amount, last.currency)} via Airwallex, but the supplier says only ${money(got, last.currency)} arrived - a ${money(last.amount - got, last.currency)} gap (often a bank or middle-bank fee). Topping up a short payment is left to a person on purpose: confirm the fee with the supplier first.`; }
+    if (got) return `Paid ${money(last.amount, last.currency)} via ${RAIL}, but the supplier says only ${money(got, last.currency)} arrived - a ${money(last.amount - got, last.currency)} gap (often a bank or middle-bank fee). Topping up a short payment is left to a person on purpose: confirm the fee with the supplier first.`; }
   if (i.alert) return `A safety alarm is on (${i.alert.replace(/_/g, " ").toLowerCase()}). Payments here are frozen until a person checks.`;
   if (!last) return "Nothing has been sent yet. A person needs to approve the payment first.";
   const why = last.failure_message ? ` (bank said: "${last.failure_message}")` : "";
@@ -143,7 +145,7 @@ function render() {
       const last = i.payments.filter(p => !neverSent(p, i.reopened_at)).slice(-1)[0], said = (i.events || []).some(e => e.kind === "supplier_message");
       const chk = el("details", "checked"); chk.open = innerWidth >= 900; chk.append(el("summary", null, "What the AI checked before answering"));
       const ol = el("ul");
-      ol.append(el("li", null, last ? `Asked Airwallex for the latest status of the ${money(last.amount, last.currency)} payment: ${PLAIN_STATUS[last.status] || last.status}${last.failure_type ? " (" + failLabel(last.failure_type) + ")" : ""}` : "Looked for payments: none sent yet"));
+      ol.append(el("li", null, last ? `Asked ${RAIL} for the latest status of the ${money(last.amount, last.currency)} payment: ${PLAIN_STATUS[last.status] || last.status}${last.failure_type ? " (" + failLabel(last.failure_type) + ")" : ""}` : "Looked for payments: none sent yet"));
       ol.append(el("li", null, said ? "Read the supplier's email (treated as untrusted - it can't give orders)" : "No supplier email to read"));
       ol.append(el("li", null, i.alert ? `Saw the code's safety alarm: ${i.alert.replace(/_/g, " ").toLowerCase()}` : "No safety alarm on this invoice"));
       ol.append(el("li", null, `Could only pick from what the code allowed: ${(i.decision.allowed || []).map(a => PLAIN_DECISION[a] || a).join(" / ")}`));
@@ -162,19 +164,19 @@ function render() {
     const l = el("div"); l.append(el("b", null, p.role === "original" ? "Original" : "Replacement"), pill(p.status));
     if (p.failure_type) l.append(el("span", "fail", failLabel(p.failure_type) + (p.failure_message ? ` - "${p.failure_message}"` : "")));
     if (p.anomaly) l.append(el("span", "fail", "⚠ " + p.anomaly.replace(/_/g, " ")));
-    if (p.fx_quote_id) l.append(el("div", "fxbig", `${money(p.amount, p.currency)} = ${usd(p.cost_amount)} - Airwallex rate locked · checked against your ${usd(S.policy.per_tx_cap)} limit`));
-    if (p.fx_quote_id) l.append(el("small", "adv", `Locked FX: ${money(p.amount, p.currency)} = ${usd(p.cost_amount)} at ${p.fx_rate} (Airwallex quote, counted against USD caps)`));
-    if (p.fee) l.append(el("small", null, "Airwallex fee " + usd(p.fee)));
-    l.append(el("small", "adv", `request ${p.request_id.slice(0, 8)}… · Airwallex ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
+    if (p.fx_quote_id) l.append(el("div", "fxbig", `${money(p.amount, p.currency)} = ${usd(p.cost_amount)} - ${RAIL} rate locked · checked against your ${usd(S.policy.per_tx_cap)} limit`));
+    if (p.fx_quote_id) l.append(el("small", "adv", `Locked FX: ${money(p.amount, p.currency)} = ${usd(p.cost_amount)} at ${p.fx_rate} (${RAIL} quote, counted against USD caps)`));
+    if (p.fee) l.append(el("small", null, "" + RAIL + " fee " + usd(p.fee)));
+    l.append(el("small", "adv", `request ${p.request_id.slice(0, 8)}… · ${RAIL} ${p.provider_id ? p.provider_id.slice(0, 8) + "…" : "unknown"} · source: ${p.status_source}`));
     const r = el("div", "payacts");
     if (p.status === "UNKNOWN" || (p.status === "RESERVED" && Date.now() / 1000 - (p.updated_at || p.created_at) > 60)) {   // a fresh RESERVED is just mid-send
-      const rs = el("button", "warnbtn", "Re-send (same request ID)"); rs.title = "Only if Airwallex has never heard of it. Same request ID, all checks run again; Airwallex refuses a true duplicate.";
+      const rs = el("button", "warnbtn", "Re-send (same request ID)"); rs.title = "Only if " + RAIL + " has never heard of it. Same request ID, all checks run again; " + RAIL + " refuses a true duplicate.";
       rs.onclick = () => act(`/api/incidents/${i.id}/resend`, { request_id: p.request_id }, x => "Status now " + x.status); r.append(rs);
-      const rl = el("button", null, "Release hold"); rl.title = "Only for a payment Airwallex has no record of (e.g. its approval expired). Needs a note; frees the budget.";
+      const rl = el("button", null, "Release hold"); rl.title = "Only for a payment " + RAIL + " has no record of (e.g. its approval expired). Needs a note; frees the budget.";
       rl.onclick = () => { const n = ($(".note") || {}).value || ""; act(`/api/incidents/${i.id}/release`, { request_id: p.request_id, note: n }, x => "Payment now " + x.status); };
       r.append(rl);
     }
-    const rec = el("button", null, "Check Airwallex"); rec.title = "Reconcile: look this request up at Airwallex"; rec.onclick = () => act(`/api/payments/${p.request_id}/reconcile`, {}, x => "Airwallex says " + x.status); r.append(rec);
+    const rec = el("button", null, "Check " + RAIL + ""); rec.title = "Reconcile: look this request up at " + RAIL + ""; rec.onclick = () => act(`/api/payments/${p.request_id}/reconcile`, {}, x => "" + RAIL + " says " + x.status); r.append(rec);
     if (!["PAID", "CANCELLED"].includes(p.status) && p.provider_id) {
       const sim = el("span", "sim adv"); sim.append(el("small", null, "Sandbox bank simulator:"));
       if (p.status !== "SENT") { const b = el("button", null, "Bank picks it up (SENT)"); b.onclick = () => act(`/api/payments/${p.request_id}/simulate`, { status: "SENT" }, "Simulated SENT"); sim.append(b); }
@@ -188,7 +190,7 @@ function render() {
     }
     if (p.status === "PAID" && p.provider_id) {
       const proof = el("button", null, "Copy payment proof for the supplier");
-      proof.onclick = async () => { const t = `Hi ${i.supplier}, here is proof of payment for ${i.invoice}: ${money(p.amount, p.currency)} sent via Airwallex, transfer reference ${p.provider_id}, status PAID${p.updated_at ? " (confirmed " + new Date(p.updated_at * 1000).toISOString().slice(0, 10) + ")" : ""}. If it hasn't reached you, please check with your bank using that reference.`;
+      proof.onclick = async () => { const t = `Hi ${i.supplier}, here is proof of payment for ${i.invoice}: ${money(p.amount, p.currency)} sent via ${RAIL}, transfer reference ${p.provider_id}, status PAID${p.updated_at ? " (confirmed " + new Date(p.updated_at * 1000).toISOString().slice(0, 10) + ")" : ""}. If it hasn't reached you, please check with your bank using that reference.`;
         try { await navigator.clipboard.writeText(t); toast("Payment proof copied - paste it into your reply"); } catch { prompt("Copy this payment proof:", t); } };
       r.prepend(proof);
     }
@@ -210,11 +212,11 @@ function render() {
   if (i.payments.some(p => p.status === "PAID")) { ap.hidden = true; pay.hidden = true; }   // already paid: nothing left to approve here
   close.onclick = () => { if (!note.value.trim()) { note.focus(); return toast("Write a short note first - what you checked before closing", true); } act(`/api/incidents/${i.id}/close`, { note: note.value }, "Incident closed"); };
   const rc = el("a", "btnlink", "Download receipt"); rc.href = "#"; rc.onclick = async e => { e.preventDefault(); try { const r = await api(`/api/incidents/${i.id}/receipt`); const L = [`RECEIPT - ${i.supplier} ${i.invoice} - ${money(i.amount, i.currency)}`, `Environment: ${r.environment}`, `Log intact: ${r.log_integrity.intact ? "yes" : "NO"} (${r.log_integrity.entries_checked} entries checked)`, ""];
-    for (const x of r.proof_of_payment || []) L.push(`PAID: Airwallex transfer ${x.airwallex_transfer_id} (${x.role})`);
+    for (const x of r.proof_of_payment || []) L.push(`PAID: ${RAIL} transfer ${x.airwallex_transfer_id} (${x.role})`);
     for (const a of i.approvals || []) L.push(`APPROVAL #${a.id}: ${a.role} ${money(a.amount, i.currency)} - approved by ${a.approved_by}${a.cosigned_by ? ", co-signed by " + a.cosigned_by : ""}${a.used_by_request ? " (used once)" : ""}`);
     L.push("", "What happened, step by step (source in brackets):");
     for (const e of r.events.filter(e => e.incident_id === i.id)) { const b = e.body || {}; L.push(`${new Date(e.at * 1000).toLocaleString("en-US", { timeZone: "America/Chicago" })} CT  [${/simulat/.test(e.kind) ? "simulator" : e.provenance}] ${e.kind.replace(/_/g, " ")}${b.status ? " - Airwallex said: " + b.status : ""}${b.by ? " by " + b.by : ""}${b.note ? ` - note: "${b.note}"` : ""}  #${(e.hash || "").slice(0, 10)}`); }
-    L.push("", "Sources: observed = read back from Airwallex · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text · simulator = pretend bank (demo/testing only)", "", "Machine-readable copy for auditors (amounts in cents) follows:", JSON.stringify(r, null, 1));
+    L.push("", "Sources: observed = read back from " + RAIL + " · decided = enforced by code · model = AI opinion · operator = a person · untrusted = supplier text · simulator = pretend bank (demo/testing only)", "", "Machine-readable copy for auditors (amounts in cents) follows:", JSON.stringify(r, null, 1));
     const a = el("a"); a.href = URL.createObjectURL(new Blob([L.join("\n")], { type: "text/plain" })); a.download = `receipt-${i.invoice}.txt`; a.click(); } catch (err) { toast(err.message, true); } };
   const reopen = el("button", null, "Reopen after checking"); reopen.title = "After you've investigated (e.g. called the supplier on a number you already had). Your note is kept in the log.";
   reopen.onclick = () => act(`/api/incidents/${i.id}/reopen`, { note: note.value }, r => r && r.pending ? "Reopen request saved - a second person must confirm it" : "Incident reopened"); reopen.hidden = i.state !== "ESCALATED";
@@ -228,9 +230,9 @@ function render() {
     const a = el("a"); a.href = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" })); a.download = `log-${i.invoice}.csv`; a.click(); } catch (err) { toast(err.message, true); } };
   ops.append(ap, pay, note, reopen, close, rc, csv); op.append(ops);
   if (i.currency !== S.policy.currency && !i.payments.some(p => p.status === "PAID")) {   // show the dollar cost before anyone approves
-    const fx = el("p", "fxbig", "Checking today's Airwallex rate…"); op.append(fx);
+    const fx = el("p", "fxbig", "Checking today's " + RAIL + " rate…"); op.append(fx);
     const c = fxCache[i.id]; const get = c && Date.now() - c.t < 120000 ? c.p : (fxCache[i.id] = { t: Date.now(), p: api(`/api/incidents/${i.id}/fx-preview`, {}) }).p;
-    get.then(q => { if (q.cost) fx.textContent = `${money(i.amount, i.currency)} ≈ ${usd(q.cost)} at Airwallex's rate ${q.rate}${q.mid_rate ? " (market " + q.mid_rate + ")" : ""}. This dollar amount is what the ${usd(S.policy.dual_approval_over)} co-sign and ${usd(S.policy.per_tx_cap)} limits check. The rate is locked when you press Send (it can move by a cent or two).`; })
+    get.then(q => { if (q.cost) fx.textContent = `${money(i.amount, i.currency)} ≈ ${usd(q.cost)} at ${RAIL}'s rate ${q.rate}${q.mid_rate ? " (market " + q.mid_rate + ")" : ""}. This dollar amount is what the ${usd(S.policy.dual_approval_over)} co-sign and ${usd(S.policy.per_tx_cap)} limits check. The rate is locked when you press Send (it can move by a cent or two).`; })
       .catch(() => { delete fxCache[i.id]; fx.textContent = "Couldn't get a rate right now - the exact dollar cost is locked and checked when you press Send."; });
   }
   if (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over)) {
@@ -245,12 +247,12 @@ function render() {
   // Try to break it
   const br = el("section", "card tricks adv"); br.append(el("h3", null, "Try to break it (for testers)"));
   const tb = el("div", "btns");
-  const drop = el("button", null, S.drop_armed ? "Next reply will be lost ✓" : "Lose the next Airwallex reply"); drop.onclick = () => act("/api/drop-next", {}, "The next transfer will really be created, but its reply will be dropped");
+  const drop = el("button", null, S.drop_armed ? "Next reply will be lost ✓" : "Lose the next " + RAIL + " reply"); drop.onclick = () => act("/api/drop-next", {}, "The next transfer will really be created, but its reply will be dropped");
   const trick = async (r2, body) => { try { await api(`/api/incidents/${i.id}/approve`, { role: r2 }); } catch (e) { return toast(e.message, true); } act(`/api/incidents/${i.id}/pay`, { role: r2, ...body }); };
   const more = el("button", null, "Send $1 more than approved"); more.onclick = () => trick(role, { amount: ((i.amount + 100) / 100).toFixed(2) });
   const again = el("button", null, "Pay the supplier again right now"); again.onclick = () => trick("replacement", {});
   more.disabled = again.disabled = i.state !== "OPEN";
-  const edit = el("button", null, "Change the supplier's bank account inside Airwallex"); edit.onclick = () => act("/api/demo/edit-payee", {}, r => `Payee's account changed at Airwallex to ****${r.account_last4}. Now try sending a payment.`);
+  const edit = el("button", null, "Change the supplier's bank account inside " + RAIL + ""); edit.onclick = () => act("/api/demo/edit-payee", {}, r => `Payee's account changed at ${RAIL} to ****${r.account_last4}. Now try sending a payment.`);
   const rever = el("button", null, "I called the supplier - accept their current details"); rever.title = "Uses the note box above. With two operators this needs a second person to confirm.";
   rever.onclick = () => act("/api/payee/reverify", { note: note.value }, r => r.pending ? `Request #${r.pending} waiting for a second person to confirm` : "Payee re-verified");
   tb.append(drop, more, again, edit, rever); br.append(tb);
