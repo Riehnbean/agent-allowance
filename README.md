@@ -78,11 +78,37 @@ export AGENT_PROVIDER=pollinations,local   # tried in order: free GPT-OSS 20B (n
 # a click never waits more than AGENT_CLICK_BUDGET (default 6s) - if the AI isn't done, the rulebook answers.
 # With no model running, the deterministic rules agent answers automatically.
 python3 server.py                                  # http://127.0.0.1:8710
-./scripts/test.sh   # 187 offline tests, no network
+./scripts/test.sh   # 212 offline tests, no network
 python3 -m watchdog.cycle --minutes 3   # Watchdog: attack, auto-repair behind gates (needs ANTHROPIC_API_KEY to repair), report
 python3 scripts/sandbox_e2e.py                     # scenarios against the live sandbox
 AGENT_PROVIDER=local python3 scripts/llm_eval.py   # the real model on 9 tricky incidents (scam, prompt injection...)
 ```
+
+## PayPal rail (added for the PayPal AI Hackathon, Nov 2026)
+The same incident desk can now pay suppliers through **PayPal Payouts** instead of Airwallex. Nothing in the money rules
+changed: caps, STOP, single-use approvals, the duplicate lock and every alarm run unchanged on the new rail.
+Built by AI coding agents (Claude) under Zach Riehn's direction; he chose the scope and the safety rules.
+
+- `allowance/paypal_adapter.py` - sandbox only (refuses any base URL but `api-m.sandbox.paypal.com`). OAuth2 client
+  credentials; `POST /v1/payments/payouts` with one item, where `sender_batch_id`, `sender_item_id` and the
+  `PayPal-Request-Id` header are all our `request_id`, so a re-send after a lost reply can never pay twice;
+  `GET /v1/payments/payouts/{id}` for status. The mapping from PayPal item statuses to the desk's statuses and
+  retry classes is a table at the top of the file. In short: `SUCCESS` = paid; `PENDING`/`ONHOLD`/`UNCLAIMED` = still
+  in flight (no replacement allowed); a receiver problem (`RECEIVER_UNREGISTERED`, `INVALID_EMAIL`...) or `RETURNED`
+  goes to a person; `BLOCKED`/`REFUNDED`/`REVERSED` count as deliberate; only `INTERNAL_ERROR` and `INSUFFICIENT_FUNDS`
+  are safe to retry. A `RETURNED` after `SUCCESS` raises the same alarm as a bank return.
+- PayPal pays an email or PayPal ID, not a bank account. The payee's receiver is part of its fingerprint, so a
+  receiver email changed after approval stops the desk and needs two people to accept, like changed bank details.
+- `allowance/paypal_fake.py` - an in-memory PayPal used by the tests and the offline demo. `tests/test_paypal.py` (25 tests).
+
+```sh
+python3 demo.py --paypal                     # offline demo on the PayPal rail, no keys
+PROVIDER=paypal PAYPAL_CLIENT_ID=... PAYPAL_CLIENT_SECRET=... OPERATOR_TOKENS="zach:s1,jordan:s2" python3 server.py
+python3 scripts/paypal_sandbox_e2e.py        # one live $1 sandbox payout; skips cleanly without keys
+```
+Known gaps on this rail: no FX (USD only); PayPal has no "find payout by `sender_batch_id`" or "list payouts" read,
+so a payout whose reply was lost can only be resolved by an operator re-send (PayPal dedupes it), not released,
+and the scan for payouts made outside the desk does not cover PayPal.
 
 ## Demo script (≈3 min, same as the guided tour and the video)
 1. **INV-1042** (first payment failed with a bank timeout) → **Ask the AI** → "Safe to send it again".
