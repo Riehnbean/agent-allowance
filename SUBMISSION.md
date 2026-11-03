@@ -8,7 +8,7 @@
 >
 > - **The AI reads what emails mean.** On 16 held-out cases written by a separate AI that never saw our prompt: Claude 16/16, open-source GPT-OSS 15/16, keyword rulebook 9/16 (small test set).
 > - **It repairs itself.** Every hour it attacks itself; if a money rule breaks, payments stop until an AI-written fix passes six automatic checks and a person taps Apply.
-> - **Try it in 5 seconds, no install:** https://riehnbean.github.io/agent-allowance/demo/ (guided tour, works on a phone; Airwallex is simulated there). **Video:** the 3:50 walkthrough attached to this submission. **Code:** https://github.com/Riehnbean/agent-allowance · run `python3 demo.py` locally (no keys). **Proof:** `receipts/`.
+> - **Try it in 5 seconds, no install:** https://riehnbean.github.io/agent-allowance/demo/ (guided tour, works on a phone; Airwallex is simulated there). **Video:** the 3:59 walkthrough attached to this submission. **Code:** https://github.com/Riehnbean/agent-allowance · run `python3 demo.py` locally (no keys). **Proof:** `receipts/`.
 
 ![How it works](docs/flow.png)
 
