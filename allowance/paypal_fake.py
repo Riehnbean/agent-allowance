@@ -81,9 +81,11 @@ class FakePayPalAPI:
                 raise ProviderError(400, "VALIDATION_ERROR", "Invalid request - see details.")
             if sbid in self.by_sender:
                 old = self.by_sender[sbid]
-                raise ProviderError(400, "USER_BUSINESS_ERROR", f"Batch with given sender_batch_id already exists: {sbid}", {
-                    "name": "USER_BUSINESS_ERROR", "message": "Batch with given sender_batch_id already exists",
-                    "links": [{"href": f"{BASE}/v1/payments/payouts/{old}", "rel": "self", "method": "GET"}]})
+                # Exactly the shape the real sandbox returned on Nov 3 2026 (the link sits inside details[]).
+                raise ProviderError(400, "USER_BUSINESS_ERROR", "User business error.", {
+                    "name": "USER_BUSINESS_ERROR", "message": "User business error.", "links": [],
+                    "details": [{"field": "SENDER_BATCH_ID", "location": "body", "issue": "Batch with given sender_batch_id already exists",
+                                 "link": [{"href": f"{BASE}/v1/payments/payouts/{old}", "rel": "self", "method": "GET"}]}]})
             bid = _id()
             its = []
             total = 0

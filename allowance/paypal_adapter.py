@@ -284,12 +284,20 @@ class PayPalPayouts:
 
     @staticmethod
     def _is_duplicate(e):
-        txt = f"{e.code} {e.message}".lower()
+        # Real sandbox reply (verified Nov 3 2026): 400 USER_BUSINESS_ERROR "User business error." with
+        # details[] = [{"field": "SENDER_BATCH_ID", "issue": "Batch with given sender_batch_id already exists",
+        #               "link": [{"href": ".../v1/payments/payouts/<batch id>", "rel": "self"}]}]
+        issues = " ".join(f"{(d or {}).get('field', '')} {(d or {}).get('issue', '')}" for d in ((e.details or {}).get("details") or []))
+        txt = f"{e.code} {e.message} {issues}".lower()
         return bool(PayPalPayouts._batch_link(e.details)) or "duplicate" in txt or ("sender_batch_id" in txt and ("already" in txt or "used" in txt))
 
     @staticmethod
     def _batch_link(details):
-        for link in (details or {}).get("links") or []:
+        details = details or {}
+        links = list(details.get("links") or [])
+        for d in details.get("details") or []:
+            links += list((d or {}).get("link") or []) + list((d or {}).get("links") or [])
+        for link in links:
             m = _BATCH_LINK.search(str((link or {}).get("href", "")).split("?")[0])
             if m:
                 return m.group(1)

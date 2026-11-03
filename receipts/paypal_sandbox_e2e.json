@@ -1,0 +1,45 @@
+{
+ "environment": "PayPal Payouts SANDBOX - no real money",
+ "receiver_is_sandbox_account": true,
+ "payout_batch_id": "Y7Q9WBV8Q28MY",
+ "first_status": "PROCESSING",
+ "replay_same_payout": true,
+ "duplicate_sender_batch_id": {
+  "rejected": true,
+  "http": 400,
+  "name": "USER_BUSINESS_ERROR",
+  "message": "User business error.",
+  "recognised_as_duplicate": true,
+  "links_to_original": true
+ },
+ "paypal_status": "SUCCESS",
+ "desk_status": "PAID",
+ "failure_type": null,
+ "log_intact": true,
+ "events": [
+  {
+   "kind": "beneficiary_allowed",
+   "provenance": "operator"
+  },
+  {
+   "kind": "incident_opened",
+   "provenance": "decided"
+  },
+  {
+   "kind": "approved",
+   "provenance": "operator"
+  },
+  {
+   "kind": "payment_reserved",
+   "provenance": "decided"
+  },
+  {
+   "kind": "status_observed",
+   "provenance": "observed"
+  },
+  {
+   "kind": "status_observed",
+   "provenance": "observed"
+  }
+ ]
+}
