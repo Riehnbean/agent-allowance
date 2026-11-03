@@ -48,11 +48,18 @@ def never_sent(p, reopened_at=None):
     """A row blocked here before anything went to Airwallex (low balance, STOP, payee re-read...).
     A row an operator RELEASED was UNKNOWN first, so Airwallex may have it: it counts as sent until a
     person has investigated and reopened the incident AFTER the release (release escalates it)."""
-    if not (p["status"] == "CANCELLED" and p["status_source"] == "none"):
+    reviewed = bool(reopened_at and reopened_at >= (p["updated_at"] or 0))
+    if p["status"] != "CANCELLED":
+        return False
+    if p["status_source"] == "provider_create":
+        # Airwallex refused it outright when we tried to create it (a definite rejection, e.g. a fee setting):
+        # once a person has looked and reopened the invoice, a fresh original may be approved
+        return reviewed
+    if p["status_source"] != "none":
         return False
     if p["failure_type"] != "RELEASED_BY_OPERATOR":
         return True
-    return bool(reopened_at and reopened_at >= (p["updated_at"] or 0))
+    return reviewed
 
 
 class Refused(Exception):
@@ -158,7 +165,7 @@ class Service:
             if not pays or any(in_flight(p["status"]) for p in pays) or pays[-1]["status"] != "CANCELLED" or pays[-1]["status_source"] != "provider_get":
                 raise Refused("a replacement can only be approved after Airwallex confirms the previous payment failed")
         if role == "original" and any(not never_sent(p, inc["reopened_at"]) for p in self.s.q("SELECT status,status_source,failure_type,updated_at FROM payments WHERE incident_id=?", incident_id)):
-            raise Refused("an original payment already went out for this invoice - only a replacement can be approved, and only after it failed")
+            raise Refused("an earlier payment on this invoice may have reached Airwallex - approve a replacement after it is confirmed failed, or get a person to check and reopen the invoice first")
         if (b, a, c) != (inc["beneficiary_id"], inc["amount"], inc["currency"]):
             self.s.log("policy", "approval_refused", "decided", incident_id, reason="approval terms differ from the invoice")
             raise Refused("an approval must match the invoice exactly (payee, amount, currency)")
@@ -590,7 +597,9 @@ class Service:
             "kill_switch": bool(pol["killed"]),
             "budget_left_today": pol["daily_cap"] - self.s.committed_today(self.now()),
             "now": self.now(),
-            "supplier_messages": [json.loads(e["body"]).get("text") for e in self.s.q("SELECT body FROM events WHERE incident_id=? AND kind='supplier_message' ORDER BY id DESC LIMIT 5", incident_id)][::-1],
+            # after two people reopened the invoice, the messages they reviewed are not re-judged: only newer ones are
+            "supplier_messages": [json.loads(e["body"]).get("text") for e in self.s.q("SELECT body FROM events WHERE incident_id=? AND kind='supplier_message' AND at>? ORDER BY id DESC LIMIT 5", incident_id, inc["reopened_at"] or 0)][::-1],
+            "earlier_messages_reviewed_by_a_person": bool(inc["reopened_at"]) and bool(self.s.one("SELECT 1 FROM events WHERE incident_id=? AND kind='supplier_message' AND at<=?", incident_id, inc["reopened_at"])),
         }
 
     def allowed_actions(self, incident_id):

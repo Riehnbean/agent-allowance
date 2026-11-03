@@ -124,6 +124,9 @@ class Round6(unittest.TestCase):
         rel = {"status": "CANCELLED", "status_source": "none", "failure_type": "RELEASED_BY_OPERATOR", "updated_at": 100}
         self.assertFalse(never_sent(rel, reopened_at=50))     # reopened before the release: still counts as possibly sent
         self.assertTrue(never_sent(rel, reopened_at=200))     # a person reopened after the release: a fresh original is allowed
+        rej = {"status": "CANCELLED", "status_source": "provider_create", "failure_type": "REJECTED_FEE_UNKNOWN", "updated_at": 100}
+        self.assertFalse(never_sent(rej))                      # Airwallex refused it at create: blocks until a person reviews
+        self.assertTrue(never_sent(rej, reopened_at=200))
 
 
 class ServerRound4(unittest.TestCase):

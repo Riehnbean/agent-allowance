@@ -1,6 +1,6 @@
 # Agent Allowance — Payment Incident Desk
 
-### ▶ [Try the live demo - opens in about 5 seconds, nothing to install](https://riehnbean.github.io/agent-allowance/demo/)
+### ▶ [Try the live demo - opens in 5-10 seconds, nothing to install](https://riehnbean.github.io/agent-allowance/demo/)
 
 The real app code runs right in your browser (via Pyodide), with a short guided tour. Airwallex is simulated there, so nothing real can be paid.
 
@@ -23,7 +23,7 @@ might be a scammer asking for new bank details. An AI agent reads the evidence a
 
 | Risk | Enforced in code |
 |---|---|
-| Paying twice | Duplicate lock: no new payment on an incident while another might still clear (`RESERVED/UNKNOWN/SCHEDULED/PROCESSING/SENT/OVERDUE`). |
+| Paying twice | Duplicate lock: no new payment on an incident while another might still clear (`RESERVED/UNKNOWN/CREATED/SCHEDULED/PROCESSING/SENT/OVERDUE`, and a failure not yet confirmed by a fresh read). |
 | Lost reply after submit | Payment becomes `UNKNOWN`, budget stays reserved, reconcile by the **same `request_id`** (Airwallex rejects duplicates and returns the original). |
 | Replacing too early | `REPLACE` is only allowed after a **fresh `GET /transfers/{id}`** shows `CANCELLED` with a failure type on the safe-to-retry list. |
 | Invoice-redirection fraud | The agent has no tool that changes a beneficiary. Bank-detail failures (`ACCOUNT_CLOSED`, `BENEFICIARY_BANK_RETURNED`, …) and recalls always escalate. Supplier text is logged as *untrusted*; bank-change wording it recognises (a best-effort filter, see `tests/test_nov1_*` and `tests/test_indep.py`) forces escalation. |

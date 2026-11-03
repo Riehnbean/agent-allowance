@@ -202,7 +202,7 @@ function render() {
   const ops = el("div", "btns");
   // a payment that was blocked before reaching Airwallex never went out, so the next one is still the original
   const role = i.payments.some(p => !neverSent(p, i.reopened_at)) ? "replacement" : "original";
-  const unused = i.approvals.find(a => a.role === role && !a.used_by_request && !a.stale && a.expires_at * 1000 > Date.now());
+  const unused = [...i.approvals].reverse().find(a => a.role === role && !a.used_by_request && !a.stale && a.expires_at * 1000 > Date.now());
   const ap = el("button", "primary", `Approve ${role} ${money(i.amount, i.currency)}`); ap.onclick = () => act(`/api/incidents/${i.id}/approve`, { role }, "Approved for 15 minutes"); ap.disabled = !!unused || S.policy.killed || i.state !== "OPEN" || (role === "replacement" && !i.allowed.includes("REPLACE"));
   const pay = el("button", "primary", `Send ${role}`); pay.onclick = () => { pay.disabled = true; return act(`/api/incidents/${i.id}/pay`, { role }, r => `Sent - ${PLAIN_STATUS[r.status] || r.status.toLowerCase()}`); }; pay.disabled = !unused || (unused && !unused.cosigned_by && (unused.needs_cosign || i.amount > S.policy.dual_approval_over));
   const note = el("input", "note"); note.placeholder = "What did you check?"; 

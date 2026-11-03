@@ -25,7 +25,7 @@
     { sel: "section.card.agent", t: "The supplier wants the money sent to a NEW bank account, so the code froze payments the moment that email arrived. Tap \"Ask the AI\".", wait: () => on("INV-1043") && answered() },
     { sel: "section.card.agent", t: "It says: get a person to check. And there's no way to pay this one, whatever the AI says." },
     { sel: "#list li", text: "INV-1044", t: "Tap INV-1044. Airwallex says it's paid, but the supplier says only $280 of $300 arrived.", wait: () => on("INV-1044") },
-    { sel: "section.card.agent", t: "Tap \"Ask the AI\". There's no scam word in this email, so keyword rules miss it - the AI reads what the supplier means.", wait: () => on("INV-1044") && answered() },
+    { sel: "section.card.agent", t: "Tap \"Ask the AI\". The built-in rules play it safe and send any complaint to a person; the AI also explains what the $20 gap probably is.", wait: () => on("INV-1044") && answered() },
     { sel: "section.card.story", t: "The desk shows the $20 gap and won't let anyone simply pay the full $300 again. A person checks first (it's usually a bank fee)." },
     { sel: "#list li", text: "EU-2201", t: "Tap EU-2201: a German supplier billing in euros.", wait: () => on("EU-2201") },
     { sel: "p.fxbig", t: "Before anyone approves, it shows the dollar cost at Airwallex's exchange rate. That dollar amount is what the limits and the two-person rule check." },
