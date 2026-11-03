@@ -48,7 +48,7 @@ Open http://127.0.0.1:8710 and sign in with token `zach` (a second browser as `j
 ## Airwallex APIs used (sandbox only)
 `POST /authentication/login` · `POST /beneficiaries/create` · `GET /beneficiaries/{id}` · `POST /beneficiaries/verify_account` (account check before a SEPA/UK payee is allowed) ·
 `POST /fx/quotes/create` (locked rate) · `POST /transfers/create` (with `quote_id`) · `GET /transfers/{id}` · `GET /transfers?request_id=` · `GET /transfers?from_created_at=` ·
-`GET /balances/current` · `POST /simulation/transfers/{id}/transition` · `POST /simulation/deposit/create` (funding) · webhooks (only ever trigger a fresh read). The adapter refuses any base URL other than `api.sandbox.airwallex.com`.
+`GET /balances/current` · `POST /simulation/transfers/{id}/transition` · webhooks (only ever trigger a fresh read). The adapter refuses any base URL other than `api.sandbox.airwallex.com`.
 
 Sandbox notes we verified by probing: a failed transfer ends `CANCELLED`; the reason is in `failure.message`
 (e.g. "Channel timeout"); `failure.details.type` is always `INCORRECT_ROUTING` in sandbox, so we classify by message and

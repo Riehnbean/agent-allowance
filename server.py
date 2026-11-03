@@ -268,7 +268,7 @@ def handle(method, path, body, op="operator"):
             # The desk stopped itself (payee edited, unknown transfers...). Two people resume it.
             # Bound to THIS stop: if the desk stops again for a different reason, the request no longer applies.
             return {"pending": SVC.request_action("unkill", stop_target(), body.get("note"), op)}
-        if not str(body.get("note") or "").strip():
+        if len(str(body.get("note") or "").strip()) < 10:
             raise Refused("write why it is safe to resume - it is kept in the evidence log")
         SVC.unkill(op, single_operator_mode=len(OPERATORS) <= 1)
         SVC.s.log("operator", "resume_reason", "operator", None, by=op, note=str(body.get("note"))[:500])

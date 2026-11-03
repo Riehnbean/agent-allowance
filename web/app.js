@@ -37,7 +37,7 @@ async function load(quiet) {
   if (S.env) $("#env").textContent = S.env.replace(" - ", " · ");
   const p = S.policy;
   $("#budget").textContent = `${usd(p.committed_today)} of ${usd(p.daily_cap)} today · max ${usd(p.per_tx_cap)} per payment`; $("#budget").title = "Money committed today, including the example payments and small holds for possible bank fees";
-  $("#agentname").textContent = window.__recorded ? "free open-source model (GPT-OSS) when reachable, else the rulebook · the video uses Claude" : S.agent;
+  $("#agentname").textContent = window.__recorded ? "free open-source AI (GPT-OSS) when reachable, else Claude's saved answers · the video uses live Claude" : S.agent;
   if (p.log) $("#agentname").append(el("span", p.log.intact ? "adv" : null, p.log.intact ? ` · Log intact ✓ (${p.log.entries})` : ` · LOG TAMPERED at #${p.log.first_bad}`));
   $("#benname").textContent = S.beneficiaries[0] ? `${S.beneficiaries[0].name} (${S.beneficiaries[0].bank_fingerprint})` : "created on first incident";
   const pend = $("#pending"); pend.replaceChildren();

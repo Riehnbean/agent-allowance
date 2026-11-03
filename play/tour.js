@@ -31,7 +31,7 @@
     { sel: "p.fxbig", t: "Before anyone approves, it shows the dollar cost at Airwallex's exchange rate. That dollar amount is what the limits and the two-person rule check." },
     { sel: "#kill", t: "Last one: tap the red STOP button. Now nothing at all can be paid until someone resumes it.", wait: () => /STOPPED/.test(document.querySelector("#kill")?.textContent || "") },
     { sel: null, t: () => "That's the idea: the AI gives advice, the code protects the money, and a person approves every payment. " + (window.__aiOff || /safety rulebook/.test(document.body.textContent)
-      ? "(The free AI was busy just now, so the built-in safety rulebook answered instead - the money rules work the same either way. The video shows the full app with Claude.)"
+      ? "(The free AI was busy just now, so you saw Claude's saved answers for these examples, checked live by the built-in safety rules - the money rules work the same either way. The video shows the full app with live Claude.)"
       : "(Here the AI is a free open-source model; the video shows the full app with Claude.)") },
   ];
   const css = `

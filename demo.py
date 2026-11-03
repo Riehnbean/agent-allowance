@@ -67,6 +67,7 @@ if not svc.s.one("SELECT 1 FROM incidents"):
         seed()
     finally:
         svc.s.db.execute("UPDATE policy SET dual_approval_over=?", (_keep,))
+os.environ.setdefault("DEMO_COSIGN_OVER", "20000")   # demo: co-sign over $200, same as the video and the browser demo
 if os.environ.get("DEMO_COSIGN_OVER"):  # e.g. 20000 = $200: show two-person sign-off on the seeded invoices
     svc.s.db.execute("UPDATE policy SET dual_approval_over=?", (int(os.environ["DEMO_COSIGN_OVER"]),))
 port = os.environ.get("PORT", "8710")
