@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 *.db
 *.db-*
+*.paypal.json
+.env

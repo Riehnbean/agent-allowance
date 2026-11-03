@@ -37,7 +37,14 @@ def who(token):
         if t and hmac.compare_digest(token or "", t):
             return n
     return None
-DB = os.environ.get("ALLOWANCE_DB", os.path.join(HERE, "allowance.db"))
+# Payment rail: PROVIDER=airwallex (default) or PROVIDER=paypal (PayPal Payouts sandbox). Each rail keeps its own
+# database by default, so payee ids from one rail are never sent to the other.
+PROVIDER = (os.environ.get("PROVIDER") or "airwallex").strip().lower()
+if PROVIDER not in ("airwallex", "paypal"):
+    raise SystemExit("PROVIDER must be airwallex or paypal")
+PAYPAL = PROVIDER == "paypal"
+DB = os.environ.get("ALLOWANCE_DB", os.path.join(HERE, "allowance-paypal.db" if PAYPAL else "allowance.db"))
+RAIL = "PayPal" if PAYPAL else "Airwallex"
 
 
 class DropOnce:
@@ -57,7 +64,16 @@ class DropOnce:
 
 
 DEMO = os.environ.get("DEMO") == "1"
-if DEMO:  # `python3 demo.py`: in-memory stand-in for the sandbox, no keys, nothing leaves the machine
+if PAYPAL:
+    from allowance.paypal_adapter import PayeeBook, PayPalPayouts
+    # PayPal has no payee API: payees and the send ledger live in a small local file next to the database.
+    os.environ.setdefault("RECEIPT_ENV", "PayPal Payouts SANDBOX - no real money" if not DEMO else "Practice copy - PayPal simulated, no real money")
+    if DEMO:  # in-memory PayPal fake, no keys, nothing leaves the machine
+        from allowance.paypal_fake import demo_paypal
+        API = demo_paypal()
+    else:
+        API = PayPalPayouts(book=PayeeBook(os.environ.get("PAYPAL_STATE") or DB + ".paypal.json"))
+elif DEMO:  # `python3 demo.py`: in-memory stand-in for the sandbox, no keys, nothing leaves the machine
     from allowance.demo_provider import DemoAirwallex
     API = DemoAirwallex()
 else:
@@ -109,7 +125,8 @@ def state():
             "pending": [dict(a) for a in s.q("SELECT * FROM pending_actions WHERE done_by IS NULL AND created_at>? ORDER BY id DESC", time.time() - 3600)],
             "policy": pol, "beneficiaries": [{k: v for k, v in dict(b).items() if k not in ("account_key", "details_hash")} for b in s.q("SELECT * FROM beneficiaries")], "incidents": incs,
             "agent": AGENT.nice, "drop_armed": PROV.armed,
-            "failure_types": ALL_FAILURE_TYPES, "env": ("Practice copy - Airwallex simulated, no real money" if DEMO else "Airwallex SANDBOX - fake money only"), "watchdog": watchdog_status()}
+            "failure_types": ALL_FAILURE_TYPES, "rail": RAIL,
+            "env": (f"Practice copy - {RAIL} simulated, no real money" if DEMO else f"{RAIL} SANDBOX - fake money only"), "watchdog": watchdog_status()}
 
 
 WATCHDOG_APPLY = os.environ.get("WATCHDOG_APPLY", "approve")  # "approve": a person taps Apply before a Watchdog fix goes live; "auto": fully hands-off
@@ -151,11 +168,28 @@ def watchdog_status():
     return st
 
 
+def payee_label(cur):
+    """What the operator sees for WHERE the money goes: masked bank account, or masked PayPal receiver."""
+    b = cur.get("beneficiary") or cur
+    if b.get("paypal"):
+        rcv = str(b["paypal"].get("receiver") or "")
+        user, at, dom = rcv.partition("@")
+        return "PayPal " + ((user[:1] + "***@" + dom) if at else "***" + rcv[-4:])
+    bd = b.get("bank_details") or {}
+    return f"acct ****{str(bd.get('account_number', ''))[-4:]} · ABA {bd.get('account_routing_value1')}"
+
+
 def ensure_beneficiary(op="operator"):
     # the demo supplier by name (rowid order is not stable once another payee is re-saved)
     b = SVC.s.one("SELECT * FROM beneficiaries WHERE name=? ORDER BY rowid LIMIT 1", "Maple Lumber Supply LLC")
     if b:
         return b["id"]
+    if PAYPAL:
+        r = API.create_beneficiary({"nickname": "Maple Lumber Supply (demo)", "beneficiary": {
+            "entity_type": "COMPANY", "company_name": "Maple Lumber Supply LLC", "type": "PAYPAL",
+            "paypal": {"recipient_type": "EMAIL", "receiver": os.environ.get("PAYPAL_DEMO_RECEIVER") or "maple-lumber@example.com"}}})
+        SVC.allow_beneficiary(r["id"], "Maple Lumber Supply LLC", payee_label(r), op)
+        return r["id"]
     r = API.create_beneficiary({
         "request_id": str(uuid.uuid4()), "nickname": "Maple Lumber Supply (demo)", "transfer_methods": ["LOCAL"],
         "beneficiary": {"entity_type": "COMPANY", "company_name": "Maple Lumber Supply LLC", "type": "BANK_ACCOUNT",
@@ -174,9 +208,7 @@ def reverify(requested_by, note, details=None):
         raise Refused("write what you checked (at least a sentence)")
     ben = ensure_beneficiary()
     cur = details if details is not None else API.get_beneficiary(ben)
-    bd = cur["beneficiary"]["bank_details"]
-    SVC.allow_beneficiary(ben, "Maple Lumber Supply LLC", f"acct ****{bd['account_number'][-4:]} · ABA {bd.get('account_routing_value1')}",
-                          requested_by, details=cur, override_reason=note)
+    SVC.allow_beneficiary(ben, "Maple Lumber Supply LLC", payee_label(cur), requested_by, details=cur, override_reason=note)
 
 
 def _short(x):
@@ -281,7 +313,7 @@ def handle(method, path, body, op="operator"):
                 ben, _, want = pend["target"].partition("|")
                 checked = API.get_beneficiary(ben)
                 if not want or details_hash(checked) != want:
-                    raise Refused("the payee's bank details at Airwallex changed after this request was made - "
+                    raise Refused(f"the payee's details at {RAIL} changed after this request was made - "
                                   "the request no longer matches what was checked; ask again")
             if pend["kind"] == "reopen" and reopen_target(int(pend["target"].split("|")[0])) != pend["target"]:
                 raise Refused("this invoice changed since the reopen was requested (new alarm or payment) - look again and ask again")
@@ -301,6 +333,12 @@ def handle(method, path, body, op="operator"):
         # Demo of an attacker / insider editing the payee inside Airwallex after it was approved.
         ben = ensure_beneficiary()
         cur = API.get_beneficiary(ben)
+        if PAYPAL:  # same attack on the PayPal rail: the receiver email is swapped
+            pp = cur["beneficiary"]["paypal"]
+            pp["receiver"] = "maple-payments@attacker.example" if pp.get("receiver") != "maple-payments@attacker.example" else (os.environ.get("PAYPAL_DEMO_RECEIVER") or "maple-lumber@example.com")
+            API.update_beneficiary(ben, {"beneficiary": cur["beneficiary"], "nickname": cur.get("nickname")})
+            SVC.s.log("system", "demo_payee_edited_at_provider", "operator", None, beneficiary_id=ben, new_receiver=payee_label(cur))
+            return {"receiver": payee_label(cur)}
         bd = cur["beneficiary"]["bank_details"]
         bd["account_number"] = "000111222333" if bd.get("account_number") != "000111222333" else "123456789"
         bd.pop("bank_name", None)
@@ -316,7 +354,7 @@ def handle(method, path, body, op="operator"):
             note = (body.get("note") or "").strip()
             # The request is bound to the exact bank details shown now; both people see the same masked account.
             return {"pending": SVC.request_action("reverify", f"{ben}|{details_hash(cur)}",
-                                                  (note + f" [account ****{last4}]") if len(note) >= 15 else note, op)}
+                                                  (note + f" [{payee_label(cur) if PAYPAL else 'account ****' + last4}]") if len(note) >= 15 else note, op)}
         reverify(op, body.get("note"))
         return {}
     if path == "/api/drop-next":
@@ -537,7 +575,7 @@ def main():
     if not OPERATORS:
         sys.exit("Set OPERATOR_TOKEN (or OPERATOR_TOKENS=name:secret,name2:secret2) first.")
     host, port = os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", 8710))
-    print(f"Operator desk on http://{host}:{port}  (Airwallex SANDBOX, agent={AGENT.label})")
+    print(f"Operator desk on http://{host}:{port}  ({RAIL} SANDBOX, agent={AGENT.label})")
     ThreadingHTTPServer((host, port), H).serve_forever()
 
 
